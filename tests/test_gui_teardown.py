@@ -137,3 +137,37 @@ def test_a_deferred_call_still_runs_for_a_living_owner():
     QApplication.processEvents()
     QApplication.processEvents()
     assert called == ["ran"]
+
+
+def test_a_pending_deferred_callback_survives_gc_and_is_unpinned_after_firing():
+    """A pending deferred call must be a GC ROOT (Common.deferredcall._PENDING).
+
+    The owner's C++ object can outlive the Python side that scheduled the call: a pane switched
+    away from stays a C++ child of the shell while its Python half becomes cyclic garbage. If the
+    collector may tear the callback apart (tp_clear) while the C++ timer is still armed, the next
+    event pump calls a function whose globals/closure are nulled and the process dies on an access
+    violation with no Python traceback (the test_single_pane mid-run crash, seen with Python
+    3.14's incremental GC). So: a full collection between arming and firing must neither clear
+    the callback nor stop it running - and once it has run, the pin must be released."""
+    from PyQt6.QtWidgets import QApplication, QWidget
+    from Common import deferredcall
+    from Common.deferredcall import defer
+
+    parent = QWidget()                 # keeps the owner's C++ side alive, like the pane's shell
+    owner = QWidget(parent)
+    called = []
+
+    class Cycle:                       # cyclic garbage carrying the callback, like a pane's
+        pass                           # lambda-connection tangle
+
+    cycle = Cycle()
+    cycle.me = cycle
+    timer = defer(owner, lambda cycle=cycle: called.append("ran"))
+    key = id(timer)
+    assert key in deferredcall._PENDING
+    del owner, cycle, timer
+    gc.collect()                       # must not clear the pinned callback under the armed timer
+    QApplication.processEvents()
+    QApplication.processEvents()
+    assert called == ["ran"], "the pending call was torn apart by a GC pass"
+    assert key not in deferredcall._PENDING, "a fired call must release its pin"

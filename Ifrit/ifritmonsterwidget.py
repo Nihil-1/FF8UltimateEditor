@@ -1,5 +1,6 @@
 import os
 import pathlib
+from PyQt6 import sip
 from PyQt6.QtCore import QSettings, Qt, pyqtSignal, QTimer
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
@@ -775,7 +776,7 @@ class IfritMonsterWidget(QWidget):
             if pane is not None:
                 self._stack.removeWidget(pane)
                 self._stack_size_policies.pop(id(pane), None)   # avoid a stale entry if id() is reused
-                pane.deleteLater()
+                sip.delete(pane)   # synchronous, see _destroy_current_pane
         self._files = []
 
     def _populate_file_list(self):
@@ -875,14 +876,25 @@ class IfritMonsterWidget(QWidget):
 
     def _destroy_current_pane(self):
         """Tear down whichever single pane is currently built - freeing its 3D viewer + GL context
-        and reclaiming its ~30 MB expanded animation. No-op if none is built."""
+        and reclaiming its ~30 MB expanded animation. No-op if none is built.
+
+        The pane is deleted SYNCHRONOUSLY (sip.delete), not with deleteLater(). deleteLater left
+        the C++ pane alive (hidden, still a child of the stack) until the next event pump - a
+        window in which the pane's Python side can become cyclic garbage the collector tears
+        apart while the C++ half, with its still-armed child QTimers, lives on: the next pump
+        then fires a timer into a cleared slot and the process dies on an access violation (the
+        test_single_pane mid-run crash; see Common/deferredcall for the full mechanism). Every
+        caller reaches this from outside the pane (file-list click, toolbar reload, Cronos
+        toggle), never from one of the pane's own signals, so deleting it on the spot is safe -
+        and it makes the teardown this method promises (GL context + RAM freed NOW) actually
+        happen now instead of at some later pump."""
         for f in self._files:
             pane = f.get('pane')
             if pane is None:
                 continue
             self._stack.removeWidget(pane)
             self._stack_size_policies.pop(id(pane), None)   # avoid a stale entry if id() is reused
-            pane.deleteLater()
+            sip.delete(pane)
             f['pane'] = None
             try:
                 f['manager'].enemy.free_animation()         # drop the expanded animation
