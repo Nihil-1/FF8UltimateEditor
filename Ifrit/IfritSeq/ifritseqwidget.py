@@ -1,19 +1,19 @@
 import os
 import xml.etree.ElementTree as ET
 
-from PyQt6.QtCore import QSize, QSettings, pyqtSignal, QTimer
+from PyQt6.QtCore import QSize, QSettings, pyqtSignal, QTimer, Qt
 from PyQt6.QtGui import QIcon
 from PyQt6.QtWidgets import (QVBoxLayout, QWidget, QScrollArea, QPushButton, QFileDialog,
                              QHBoxLayout, QMessageBox, QLabel, QComboBox, QDialog,
-                             QTextBrowser)
+                             QTextBrowser, QSplitter)
 
 from FF8GameData.dat.commandanalyser import CurrentIfType
 from FF8GameData.dat.sequencecodec import generate_help_html
 from FF8GameData.dat.sequencebake import bake_sequence, background_sequence_id_set
-from FF8GameData.dat.sequencetimeline import format_timeline_html
 from Ifrit.ifritmanager import IfritManager
 from Ifrit.IfritSeq.seqwidget import SeqWidget, VIEW_HEX
 from Ifrit.IfritSeq.seqcommandwidget import build_op_code_model
+from Ifrit.IfritSeq.seqpreviewpanel import SequencePreviewPanel
 from Common.deferredcall import defer
 
 
@@ -31,7 +31,8 @@ class IfritSeqWidget(QWidget):
     MAX_OP_CODE_VALUE = 255
     MIN_OP_CODE_VALUE = 0
 
-    def __init__(self, ifrit_manager: IfritManager, icon_path="Resources"):
+    def __init__(self, ifrit_manager: IfritManager, icon_path="Resources",
+                 file_registry=None):
         QWidget.__init__(self)
         self.current_if_index = 0
         self.file_loaded = ""
@@ -112,8 +113,22 @@ class IfritSeqWidget(QWidget):
         self.main_vertical_layout.setSpacing(10)  # gap between each sequence frame
         self.window_layout.addLayout(self.layout_top)
 
+        # Editor (left) + shared preview panel (right), split - same pattern as the camera
+        # tab. ONE panel (one 3D view, one timeline) for the whole file, loaded with
+        # whichever sequence's ▶ Preview was clicked, rather than a viewer per sequence.
+        # The panel's 3D viewer is created lazily on the first preview, so a file whose
+        # sequences are only ever read pays nothing for it.
+        self.preview_panel = SequencePreviewPanel(self.ifrit_manager, self.__bake_sequence,
+                                                  file_registry=file_registry)
+        self.preview_panel.hide()   # appears on the first ▶ Preview
+        self.splitter = QSplitter(Qt.Orientation.Horizontal)
+        self.splitter.addWidget(self.scroll_area)
+        self.splitter.addWidget(self.preview_panel)
+        self.splitter.setStretchFactor(0, 3)
+        self.splitter.setStretchFactor(1, 2)
+
         self.layout_main = QVBoxLayout()
-        self.window_layout.addWidget(self.scroll_area)
+        self.window_layout.addWidget(self.splitter)
         self.scroll_widget.setLayout(self.layout_main)
         self.layout_main.addLayout(self.main_vertical_layout)
         self.layout_main.addStretch(1)
@@ -172,6 +187,11 @@ class IfritSeqWidget(QWidget):
             self.__setup_section_data()
         self._export_xml_button.setEnabled(True)
         self._import_xml_button.setEnabled(True)
+        # A (re)load may follow an undo that also changed the MODEL sections (mesh,
+        # animations): make the preview reload the mesh on its next use, and re-run the
+        # bake if a sequence is being previewed right now.
+        self.preview_panel.invalidate_model()
+        self.preview_panel.refresh()
 
     def clear_lines(self):
         self.seq_data_widget = []
@@ -241,33 +261,35 @@ class IfritSeqWidget(QWidget):
         # bar, which aborts the process rather than reporting (see Common/deferredcall).
         defer(self, lambda: vbar.setValue(min(scroll_pos, vbar.maximum())))
 
-    # ------------------------------------------------------------------ timeline
+    # ------------------------------------------------------------------ preview
     # Running a sequence needs the whole file, not one sequence: A7 and A2 chain into the
     # others, and how long a command takes comes from the animation section. SeqWidget has
-    # neither, so the timeline is built here and handed to it as a callable.
+    # neither, so the bake is built here and handed to the preview panel as a callable.
     MAX_TIMELINE_FRAME = 600  # ~20 seconds of battle; an idle stance never ends
 
-    def __timeline_html(self, seq_id, data):
-        """Run sequence `seq_id` - with `data` as its current, possibly unsaved bytes -
-        and return the timeline as HTML."""
+    def __bake_sequence(self, seq_id):
+        """Run sequence `seq_id` with the bytes currently ON SCREEN (the edit being typed,
+        not the last save) and return the BakeResult the preview panel plays."""
         game_data = self.ifrit_manager.game_data
         sequence_by_id = {widget.getId(): bytes(widget.getByteData())
                           for widget in self.seq_data_widget}
-        sequence_by_id[seq_id] = bytes(data)  # the edit being typed, not the saved bytes
         animation_data = getattr(self.ifrit_manager.enemy, 'animation_data', None)
         frame_count = [len(animation.frames)
                        for animation in getattr(animation_data, 'animations', [])]
         background_id_set = background_sequence_id_set(game_data, sequence_by_id)
-        result = bake_sequence(game_data, sequence_by_id, seq_id, frame_count,
-                               max_frame=self.MAX_TIMELINE_FRAME,
-                               as_background=seq_id in background_id_set)
-        return format_timeline_html(result)
+        return bake_sequence(game_data, sequence_by_id, seq_id, frame_count,
+                             # The preview's placement (a scene.out encounter) when one
+                             # is picked, else the documented defaults.
+                             context=self.preview_panel.battle_context,
+                             max_frame=self.MAX_TIMELINE_FRAME,
+                             as_background=seq_id in background_id_set)
 
     def __add_seq_widget(self, data, seq_id, view):
         seq_widget = SeqWidget(data, seq_id, self.ifrit_manager.enemy.entity_type,
                                game_data=self.ifrit_manager.game_data,
                                op_code_model=self.__op_code_model,
-                               timeline_provider=self.__timeline_html)
+                               preview_enabled=True)
+        seq_widget.preview_requested.connect(self.preview_panel.preview)
         seq_widget.set_view(view)
         # Write straight to the in-memory monster on every edit (connected AFTER construction so the
         # initial populate doesn't count). The code view already compiles live into the hex source
@@ -282,6 +304,9 @@ class IfritSeqWidget(QWidget):
         Save) and tell the host pane so it dirties the file and records an undo step."""
         self.__save_file()
         self.data_edited.emit()
+        # The preview follows the bytes on screen: re-run the bake for the sequence being
+        # previewed (refresh() is a no-op while the panel is closed).
+        self.preview_panel.refresh()
 
     def __add_trailing_button(self):
         next_id = max((widget.getId() for widget in self.seq_data_widget), default=0) + 1

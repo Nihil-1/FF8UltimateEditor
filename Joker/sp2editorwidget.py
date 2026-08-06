@@ -3,6 +3,7 @@ from PyQt6.QtWidgets import (QWidget, QPushButton, QVBoxLayout, QHBoxLayout, QLa
                              QListWidget, QTableWidget, QTableWidgetItem, QHeaderView, QCheckBox)
 
 from Joker.jokermanager import Sp2Quad
+from SmallWidget.listsearchbar import ListSearchBar
 
 
 class Sp2EditorWidget(QWidget):
@@ -49,7 +50,10 @@ class Sp2EditorWidget(QWidget):
                                           "(the offset table is rebuilt on save)")
         self.add_sprite_button.clicked.connect(self.add_sprite)
 
+        self.sprite_search = ListSearchBar(self.sprite_list)  # Ctrl+F filter over the sprite list
+
         sprite_list_layout = QVBoxLayout()
+        sprite_list_layout.addWidget(self.sprite_search)
         sprite_list_layout.addWidget(self.sprite_list)
         sprite_list_layout.addWidget(self.add_sprite_button)
 

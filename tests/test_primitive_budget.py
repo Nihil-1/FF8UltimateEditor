@@ -81,3 +81,36 @@ def test_info_label_reports_drawn_and_raw():
     assert "drawn" in html
     assert "raw" in html                           # raw shown alongside when they differ
     assert "scene budget" in html
+
+
+def test_count_survives_a_geometry_change_before_the_next_paint():
+    """The cull mask is a per-paint cache. A weapon swap (or toggling hidden faces) replaces the
+    face lists and immediately updates the info bar - drawn_primitive_count() - BEFORE the next
+    paint recomputes the mask, so the count meets a mask one geometry behind. It must fall back to
+    the raw list rather than broadcast a stale mask against the new one (the crash this guards)."""
+    w = _widget()
+    v = _viewer_for(w, "d0c000.dat")
+    gl = v.gl_widget
+    # A real cull mask for the geometry as it stands (what the last paint left behind).
+    gl._recompute_cull_masks()
+    assert gl._tri_cull_mask is not None
+
+    # Now the face lists grow/shrink with no repaint - exactly _refresh_static_geometry's order:
+    # it swaps the UV lists AND the aligned hidden masks, but not the cull mask (a paint's job).
+    # The original crash was the stale cull mask OR'd against a hidden mask of the NEW length, so
+    # the hidden mask has to be re-aligned here for this to reproduce it.
+    def swap_tris(new_list):
+        gl.set_triangles_with_uv(new_list)
+        gl.set_budget_hidden_masks([False] * len(new_list),
+                                   [False] * len(gl.quads_uv))
+
+    swap_tris(list(gl.triangles_uv) + list(gl.triangles_uv)[:20])   # mask shorter than the list
+    assert gl.drawn_primitive_count() >= 0         # no ValueError
+
+    swap_tris(list(gl.triangles_uv)[:5])           # mask longer than the list
+    drawn = gl.drawn_primitive_count()
+    assert drawn >= 0
+
+    # Once the paint's recompute runs, the mask fits again and culling is back on.
+    gl._recompute_cull_masks()
+    assert gl.drawn_primitive_count() <= len(gl.triangles_uv) + len(gl.quads_uv)

@@ -8,6 +8,7 @@ from PyQt6.QtWidgets import (QWidget, QPushButton, QVBoxLayout, QHBoxLayout, QLa
                              QMessageBox, QScrollArea)
 
 from Fujin.fujinmanager import FujinManager
+from SmallWidget.listsearchbar import ListSearchBar
 
 
 class FujinWidget(QWidget):
@@ -51,12 +52,13 @@ class FujinWidget(QWidget):
         file_section_layout.addWidget(self.data_label)
         file_section_layout.addStretch(1)
 
-        # Effect list (left side)
+        # Effect list (left side), with a Ctrl+F search bar filtering it
         self.effect_list = QListWidget()
         self.effect_list.setFixedWidth(320)
         for entry in self.manager.entries:
             self.effect_list.addItem("%3d - %s" % (entry.effect_id, entry.name))
         self.effect_list.currentRowChanged.connect(self.reload_selected_entry)
+        self.effect_search = ListSearchBar.wrap(self.effect_list)
 
         # Tabs (right side)
         self.tabs = QTabWidget()
@@ -65,7 +67,7 @@ class FujinWidget(QWidget):
         self.tabs.addTab(self._build_texture_tab(), "Texture")
 
         main_editor_layout = QHBoxLayout()
-        main_editor_layout.addWidget(self.effect_list)
+        main_editor_layout.addWidget(self.effect_search.column)
         main_editor_layout.addWidget(self.tabs)
 
         main_layout = QVBoxLayout()

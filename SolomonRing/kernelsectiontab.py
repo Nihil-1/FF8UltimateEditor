@@ -12,6 +12,7 @@ from PyQt6.QtWidgets import (
 from SolomonRing.kernelentry import KernelEntry
 from SolomonRing.menu_refine_reference import MenuRefineReference
 from SolomonRing.formula_popup import FormulaPopup
+from SmallWidget.listsearchbar import ListSearchBar
 from SmallWidget.nowheel import NoWheelComboBox, NoWheelSpinBox
 
 
@@ -80,8 +81,11 @@ class KernelSectionTab(QWidget):
         self.list_widget.setFixedWidth(180)
         self.list_widget.setStyleSheet("font-size: 11pt;")
         self.list_widget.currentRowChanged.connect(self._on_row_changed)
+        # Ctrl+F filter over this section's entries (the label carries the id, so "12" or a name work)
+        self.search_bar = ListSearchBar(self.list_widget)
         list_col = QVBoxLayout()
         list_col.setContentsMargins(0, 0, 0, 0)
+        list_col.addWidget(self.search_bar)
         list_col.addWidget(self.list_widget)
         if self.config.get("growable") and self._add_entry_callback:
             add_btn = QPushButton("+ Add entry")

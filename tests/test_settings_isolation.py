@@ -26,11 +26,18 @@ def test_settings_go_to_a_file_and_not_the_registry():
     assert settings.fileName().endswith(".ini")
 
 
-def test_the_run_starts_from_the_coded_defaults():
-    """Nothing the developer once clicked in the real application may leak in: an unwritten key
-    has to come back as the default the caller asks for."""
-    settings = QSettings("FF8UltimateEditor", "FF8UltimateEditor")
-    assert settings.value("ifrit/3d/show_skeleton", False, type=bool) is False
+def test_an_unwritten_key_comes_back_as_the_callers_default():
+    """Nothing the developer once clicked in the real application may leak in.
+
+    The namespace is this test's own, and deliberately not the application's: the isolation is per
+    SESSION, not per test, so by the time this runs other tests have legitimately written real
+    settings (toggling Ifrit's skeleton checkbox saves ifrit/3d/show_skeleton) into the same
+    throwaway file. Reading one of those back would be testing the rest of the suite, not the
+    reroute. That the reroute is in place at all is what the test above pins down.
+    """
+    settings = QSettings("FF8UltimateEditor", "settings-isolation-check")
+    assert settings.value("never/written/by/anything", False, type=bool) is False
+    assert settings.value("never/written/by/anything", 42, type=int) == 42
 
 
 def test_a_value_written_by_a_test_stays_inside_the_run():

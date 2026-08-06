@@ -69,10 +69,14 @@ class JuliaWidget(QWidget):
         self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        # Interactive: the user can drag every column edge (ResizeToContents locks
+        # them). The last column (Used by) stretches into whatever width is left.
         header = self.table.horizontalHeader()
-        for col in range(len(self.HEADERS)):
-            header.setSectionResizeMode(col, QHeaderView.ResizeMode.ResizeToContents)
-        header.setSectionResizeMode(self.COL_USED_BY, QHeaderView.ResizeMode.Stretch)
+        header.setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
+        header.setStretchLastSection(True)
+        # '#' fits the full 4-digit sound ids from the start, not just the header glyph.
+        self.table.setColumnWidth(self.COL_INDEX,
+                                  self.fontMetrics().horizontalAdvance("99999") + 14)
         self.table.itemSelectionChanged.connect(self._update_action_buttons)
         self.table.itemDoubleClicked.connect(lambda _item: self.play_selected())
 
@@ -152,6 +156,13 @@ class JuliaWidget(QWidget):
         self.table.setRowCount(len(self.manager.sounds))
         for row in range(len(self.manager.sounds)):
             self._refresh_row(row)
+        # Fit the freshly loaded data once (the columns stay Interactive, so this is a
+        # starting point the user can drag from, not a lock), then keep '#' wide enough
+        # for every 4-digit id even if the top rows shown are short ones.
+        self.table.resizeColumnsToContents()
+        minimum_index_width = self.fontMetrics().horizontalAdvance("99999") + 14
+        if self.table.columnWidth(self.COL_INDEX) < minimum_index_width:
+            self.table.setColumnWidth(self.COL_INDEX, minimum_index_width)
 
     # ------------------------------------------------------------------ actions
     def load_file(self, file_name):

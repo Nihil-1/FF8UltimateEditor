@@ -68,8 +68,12 @@ class TestTheFold:
         # flag) / EA 05 (leave once it is set) / A1 (yield) / E6 F9 (back to the top). It
         # runs the same block every frame; printing it once per frame would bury whatever
         # comes after. c0m001 sequence 13 does exactly this for 10 frames.
+        # effect_signal_ready off: the poll reads the very bit that assumption reports
+        # as set (it IS the effect handshake) - on it would exit on frame 0 and leave
+        # nothing to fold, which is a different (tested) behaviour.
         sequence = [[0xA0, 0x00, 0xC3, 0x08, 0xEA, 0x05, 0xA1, 0xE6, 0xF9, 0xA9]]
-        result = _bake(game_data, sequence, {0: 4})
+        result = _bake(game_data, sequence, {0: 4},
+                       context=BattleContext(effect_signal_ready=False))
         poll_row = [row for row in build_timeline(result) if row.is_repeat]
         assert len(poll_row) == 1
         assert poll_row[0].nb_frame > 1
@@ -77,9 +81,11 @@ class TestTheFold:
 
     def test_a_row_the_animation_wraps_inside_does_not_read_backwards(self, game_data):
         # A0 loops its animation, so a merged row can start on frame 1 and end on frame 0.
+        # (Handshake off so the poll keeps polling - see the previous test.)
         sequence = [[0xA0, 0x00, 0xC3, 0x08, 0xEA, 0x05, 0xA1, 0xE6, 0xF9, 0xA9]]
-        row = [row for row in build_timeline(_bake(game_data, sequence, {0: 4}))
-               if row.is_repeat][0]
+        result = _bake(game_data, sequence, {0: 4},
+                       context=BattleContext(effect_signal_ready=False))
+        row = [row for row in build_timeline(result) if row.is_repeat][0]
         assert row.animation_text() == "anim 0 [looping, 4 frames]"
 
     def test_a_background_sequence_does_not_flood_the_timeline(self, game_data):

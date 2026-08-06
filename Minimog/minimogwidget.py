@@ -9,6 +9,7 @@ from Common.filebinding import FileBinding
 from Common.fileregistry import FileRegistry
 from Minimog.minimogmanager import MinimogManager, Sp1Quad
 from Minimog.texpalettedialog import TexPalettePickerDialog
+from SmallWidget.listsearchbar import ListSearchBar
 
 PREVIEW_SCALE = 6
 
@@ -77,6 +78,8 @@ class MinimogWidget(QWidget):
         self.icon_list = QListWidget()
         self.icon_list.setFixedWidth(220)
         self.icon_list.currentRowChanged.connect(self.reload_selected_icon)
+        # Ctrl+F search bar filtering the icon list (icon name or icon id)
+        self.icon_search = ListSearchBar.wrap(self.icon_list, match_index=True)
 
         # Quad list + add/remove (middle)
         self.quad_list = QListWidget()
@@ -232,7 +235,7 @@ class MinimogWidget(QWidget):
         self.editor_container.setEnabled(False)
 
         main_editor_layout = QHBoxLayout()
-        main_editor_layout.addWidget(self.icon_list)
+        main_editor_layout.addWidget(self.icon_search.column)
         main_editor_layout.addLayout(quad_side_layout)
         main_editor_layout.addWidget(self.editor_container)
         main_editor_layout.addStretch(1)
@@ -260,7 +263,7 @@ class MinimogWidget(QWidget):
             self.icon_list.addItems(
                 [f"{icon.name} ({len(icon.quads)} quad{'s' if len(icon.quads) != 1 else ''})"
                  for icon in self.manager.icons])
-        self.icon_list.setCurrentRow(0)
+        self.icon_search.select_first_match()  # Row 0, or the first match if a search is typed in
 
     def save_file(self):
         if self.manager.file_path:

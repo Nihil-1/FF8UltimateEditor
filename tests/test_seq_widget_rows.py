@@ -596,76 +596,101 @@ class TestHexContractIsUntouched:
         assert widget.getByteData() == SAMPLE
 
 
-class TestTimelinePane:
-    """The timeline: the sequence run, not read.
+class TestPreviewPane:
+    """The preview: the sequence run, not read.
 
-    Building it needs the whole file (a sequence chains into the others, and timing comes
-    from the animation lengths), which a SeqWidget does not have - so it is handed a
-    provider by the tab that owns the file. What matters here is that the pane follows the
-    bytes on screen rather than the saved ones, and that a preview can never take the
-    editor down with it.
+    Running it needs the whole file (a sequence chains into the others, and timing comes
+    from the animation lengths), which a SeqWidget does not have - so the tab owns ONE
+    shared panel (3D + timeline) and each sequence's ▶ Preview button only asks for it.
+    What matters here is that the panel follows the bytes on screen rather than the saved
+    ones, and that a preview can never take the editor down with it. The panel's 3D viewer
+    is lazy and needs real geometry, so with the fake manager it degrades to its
+    placeholder - the timeline part, which is what these tests read, still works.
     """
 
     # isHidden(), not isVisible(): an unshown parent makes everything invisible, so
     # isVisible() would pass whatever the widget does.
-    def test_a_widget_without_a_provider_has_no_timeline_button(self, qapp, game_data):
-        widget = make_widget(game_data)
-        assert widget.timeline_button.isHidden()
+    def test_a_widget_without_preview_has_no_button(self, qapp, game_data):
+        widget = make_widget(game_data)   # standalone: no shared panel to ask for
+        assert widget.preview_button.isHidden()
 
-    def test_the_tab_gives_every_sequence_a_timeline(self, qapp, game_data):
+    def test_the_tab_gives_every_sequence_a_preview_button(self, qapp, game_data):
         tab = make_seq_tab(game_data, [{'id': 1, 'data': bytearray([0x00, 0xA2])}])
         seq_widget = tab.seq_data_widget[0]
-        assert seq_widget._timeline_provider is not None
-        assert not seq_widget.timeline_button.isHidden()
-        assert seq_widget.timeline_widget.isHidden()
-        seq_widget.timeline_button.setChecked(True)
-        assert not seq_widget.timeline_widget.isHidden()
-        assert "frame" in seq_widget.timeline_widget.toPlainText()
+        assert not seq_widget.preview_button.isHidden()
+        assert tab.preview_panel.isHidden()   # nothing previewed yet: no panel
 
-    def test_the_timeline_follows_the_bytes_being_edited(self, qapp, game_data):
+    def test_the_button_runs_that_sequence_in_the_shared_panel(self, qapp, game_data):
+        tab = make_seq_tab(game_data, [{'id': 1, 'data': bytearray([0xA1, 0xA1, 0xA9])}])
+        tab.seq_data_widget[0].preview_button.click()
+        panel = tab.preview_panel
+        assert not panel.isHidden()
+        assert panel.current_seq_id() == 1
+        assert panel._result is not None and len(panel._result.frame_list) == 3
+        assert "3 frames" in panel._summary.text()
+
+    def test_the_preview_follows_the_bytes_being_edited(self, qapp, game_data):
         # Not the saved ones: a preview of what the file used to say would be worse than
-        # no preview. A9 ends the sequence, so the timeline stops instead of looping.
+        # no preview. A9 ends the sequence, so the run stops instead of looping.
         tab = make_seq_tab(game_data, [{'id': 1, 'data': bytearray([0xA1, 0xA1, 0xA9])}])
         seq_widget = tab.seq_data_widget[0]
-        seq_widget.timeline_button.setChecked(True)
-        assert "3 frames" in seq_widget.timeline_widget.toPlainText()
+        seq_widget.preview_button.click()
+        assert "3 frames" in tab.preview_panel._summary.text()
         seq_widget.sequence_text_widget.setPlainText("a1 a9")
-        assert "2 frames" in seq_widget.timeline_widget.toPlainText()
+        assert "2 frames" in tab.preview_panel._summary.text()
 
-    def test_a_hidden_timeline_is_not_rebuilt(self, qapp, game_data):
+    def test_a_closed_panel_is_not_rebaked(self, qapp, game_data):
         # Running a sequence follows it into the ones it chains to; doing that on every
-        # keystroke for a pane nobody opened is work for nothing.
+        # keystroke for a panel nobody opened is work for nothing.
         tab = make_seq_tab(game_data, [{'id': 1, 'data': bytearray([0xA1, 0xA9])}])
-        seq_widget = tab.seq_data_widget[0]
         nb_call = [0]
-        provider = seq_widget._timeline_provider
-        seq_widget._timeline_provider = lambda *args: (nb_call.__setitem__(0, nb_call[0] + 1),
-                                                       provider(*args))[1]
-        seq_widget.sequence_text_widget.setPlainText("a1 a1 a9")
+        provider = tab.preview_panel._bake_provider
+        tab.preview_panel._bake_provider = \
+            lambda *args: (nb_call.__setitem__(0, nb_call[0] + 1), provider(*args))[1]
+        tab.seq_data_widget[0].sequence_text_widget.setPlainText("a1 a1 a9")
         assert nb_call[0] == 0
-        seq_widget.timeline_button.setChecked(True)
+        tab.seq_data_widget[0].preview_button.click()
+        assert nb_call[0] == 1
+        tab.preview_panel.close_panel()
+        tab.seq_data_widget[0].sequence_text_widget.setPlainText("a1 a9")
         assert nb_call[0] == 1
 
-    def test_a_failing_provider_does_not_break_the_editor(self, qapp, game_data):
-        def explode(seq_id, data):
+    def test_frame_zero_events_fire_when_playback_starts(self, qapp, game_data):
+        # A monster's entrance sound sits on frame 0 (c0m001 seq 8: B5 then A8/A2).
+        # Starting a preview REACHES frame 0, so its sounds/effects must fire - only
+        # scrubbing suppresses them. This was missed: the rebake's initial seek is the
+        # suppressed kind, and the first timer tick jumped straight to frame 1.
+        tab = make_seq_tab(game_data, [{'id': 1, 'data': bytearray([0xB5, 0x00, 0x00,
+                                                                    0xA1, 0xA9])}])
+        panel = tab.preview_panel
+        reached = []
+        panel._SequencePreviewPanel__play_frame_sounds = \
+            lambda frame: reached.append(frame.index)
+        tab.seq_data_widget[0].preview_button.click()
+        assert 0 in reached
+
+    def test_a_failing_bake_does_not_break_the_editor(self, qapp, game_data):
+        from Ifrit.IfritSeq.seqpreviewpanel import SequencePreviewPanel
+
+        def explode(seq_id):
             raise RuntimeError("boom")
 
-        widget = SeqWidget(seq=bytearray(SAMPLE), id=3, entity_type=EntityType.MONSTER,
-                           game_data=game_data, timeline_provider=explode)
-        widget.timeline_button.setChecked(True)
-        assert "boom" in widget.timeline_widget.toPlainText()
-        assert widget.getByteData() == SAMPLE
+        manager = _FakeManager(game_data, [{'id': 1, 'data': bytearray([0xA9])}])
+        panel = SequencePreviewPanel(manager, explode)
+        panel.preview(1)
+        assert "boom" in panel._summary.text()
+        assert panel._result is None
 
-    def test_invalid_hex_says_so_instead_of_showing_a_stale_timeline(self, qapp, game_data):
-        # A standalone widget, not one hosted by the tab: the tab's save-on-every-edit
-        # calls getByteData() on every sequence and lets the ValueError of half-typed hex
-        # escape into a Qt slot, which aborts the process. That is a pre-existing bug of
-        # its own (it predates the timeline and fires with the timeline hidden); this test
-        # is about the timeline pane, so it stays clear of it.
-        widget = SeqWidget(seq=bytearray([0xA1, 0xA9]), id=1,
-                           entity_type=EntityType.MONSTER, game_data=game_data,
-                           timeline_provider=lambda seq_id, data: "<p>timeline</p>")
-        widget.timeline_button.setChecked(True)
-        assert "timeline" in widget.timeline_widget.toPlainText()
-        widget.sequence_text_widget.setPlainText("zz")
-        assert "invalid hex" in widget.timeline_widget.toPlainText()
+    def test_invalid_hex_says_so_instead_of_showing_a_stale_preview(self, qapp, game_data):
+        # Half-typed hex in ANY sequence makes the provider's getByteData() raise: the
+        # panel must report it, not crash or keep playing the previous bake as if it
+        # were current.
+        from Ifrit.IfritSeq.seqpreviewpanel import SequencePreviewPanel
+
+        def provider(seq_id):
+            raise ValueError("non-hexadecimal number found")
+
+        manager = _FakeManager(game_data, [{'id': 1, 'data': bytearray([0xA9])}])
+        panel = SequencePreviewPanel(manager, provider)
+        panel.preview(1)
+        assert "unavailable" in panel._summary.text().lower()

@@ -718,6 +718,16 @@ HELP = {
     "used_item_index": "Ammo item consumed by this Shot attack.",
 }
 
+# Enemy attacks (section 4) override the generic crit_bonus help: the attacker is a monster and
+# monsters have no LUCK stat (charaStat[5] is zeroed by setMonsterInfoFromDatInfoSection @0x48bbd0
+# and never written again), so the LUCK term of Damage_RollCrit is always 0 here.
+_CRIT_BONUS_MONSTER_HELP = (
+    "Bonus to the critical-hit rate. Damage_RollCrit: crit if rand(0-255) <= this + attacker "
+    "LUCK - but a MONSTER has no LUCK stat (always 0), so here the chance is exactly this/256 "
+    "and this byte is the only source of crits for the monster. 255 = always crits. A crit "
+    "doubles physical damage. Only crit-rolling Attack Types read it (Physical, % physical, "
+    "Physical ignore VIT). Click f(x) for detail.")
+
 # ---- IDA field-xref findings for previously-unknown bytes -------------------
 # (section_id, field_name) -> (new_label or None, help)
 _STATUS_WIN = (None,
@@ -1079,8 +1089,15 @@ for sid_s, cfg in sections.items():
         # Crit chance: the SAME roll (Damage_RollCrit) also reads Enemy attacks' crit_bonus,
         # Blue Magic's crit_bonus and Shot's crit_increase - confirmed via their
         # RELATED_TO_CRIT_BONUS write sites in Battle_applyDamage.
-        if (sid, f["name"]) in ((4, "crit_bonus"), (20, "crit_bonus"), (22, "crit_increase")):
+        if (sid, f["name"]) in ((20, "crit_bonus"), (22, "crit_increase")):
             f["formula"] = "weapon_crit"
+        # Enemy attacks (section 4): same roll, but the attacker is a monster and monsters have
+        # NO LUCK stat - setMonsterInfoFromDatInfoSection @0x48bbd0 zeroes charaStat[5] (LUCK) at
+        # load and nothing writes it again, so the LUCK term is a hard 0 and this byte alone
+        # decides the chance. Own formula key = no misleading "Attacker LUCK" input in the popup.
+        if sid == 4 and f["name"] == "crit_bonus":
+            f["formula"] = "monster_crit"
+            f["help"] = _CRIT_BONUS_MONSTER_HELP
         # Status inflict chance: every "status attack accuracy" byte across the kernel feeds
         # Battle_ApplyStatusWithResistRoll: STR/VIT for physical-dispatch Attack Types, MAG/SPR
         # for the magic/GF-dispatch ones (picked live from this entry's own Attack Type field).

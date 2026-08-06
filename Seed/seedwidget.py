@@ -9,6 +9,7 @@ from Common.filebinding import FileBinding
 from Common.fileregistry import FileRegistry
 from Ifrit.Ifrit3D.ifrit3dwidget import Ifrit3DWidget
 from Seed.seedmanager import SeedManager
+from SmallWidget.listsearchbar import ListSearchBar
 
 
 class SeedWidget(QWidget):
@@ -51,6 +52,9 @@ class SeedWidget(QWidget):
         self.model_list = QListWidget()
         self.model_list.setStyleSheet("background:#1a1a1f; color:white; border:none;")
         self.model_list.currentRowChanged.connect(self._on_model_selected)
+        self.model_search = ListSearchBar(self.model_list)
+        self.model_search.setStyleSheet("QLineEdit {background:#1a1a1f; color:white; border:1px solid #3a3a3f;}")
+        left_layout.addWidget(self.model_search)
         left_layout.addWidget(self.model_list)
 
         self.viewer_3d = Ifrit3DWidget(self.seed_manager, show_controls=True)
@@ -119,7 +123,7 @@ class SeedWidget(QWidget):
             self.model_list.addItem(item)
         self.model_list.blockSignals(False)
         if entries:
-            self.model_list.setCurrentRow(0)
+            self.model_search.select_first_match()  # Row 0, or the first match if a search is typed in
 
     def load_mch(self, file_path):
         """Load a standalone field character model (path from the shared header toolbar)."""

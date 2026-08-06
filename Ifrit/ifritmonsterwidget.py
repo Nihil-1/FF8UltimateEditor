@@ -22,6 +22,7 @@ from Ifrit.IfritSeq.ifritseqwidget import IfritSeqWidget
 from Ifrit.IfritCameraSeq.ifritcameraseqwidget import IfritCameraSeqWidget, _CAMERA_SECTION_BY_ENTITY
 from Ifrit.IfritCameraSeq.camerapreview import CameraPreviewPanel
 from Ifrit.IfritDynamicTexture.texturepreviewwidget import TexturePreviewWidget
+from SmallWidget.listsearchbar import ListSearchBar
 from FF8GameData.monsterdata import EntityType
 from Ifrit.Ifrit3D.ifrit3dwidget import Ifrit3DWidget
 from Ifrit.IfritTexture.ifrittexturewidget import IfritTextureWidget
@@ -107,7 +108,7 @@ class IfritFilePane(QWidget):
     edited = pyqtSignal()          # emitted on EVERY real edit (drives undo snapshots)
 
     def __init__(self, ifrit_manager: IfritManager, path: str, settings: QSettings,
-                 icon_path="Resources", weapon_provider=None):
+                 icon_path="Resources", weapon_provider=None, file_registry=None):
         super().__init__()
         self.ifrit_manager = ifrit_manager   # its enemy + textures are already set for `path`
         self.path = path
@@ -131,7 +132,8 @@ class IfritFilePane(QWidget):
 
         # ── Editor widgets (each bound to THIS pane's manager) ───────────
         self._ai_widget = IfritAIWidget(settings, ifrit_manager, icon_path=icon_path)
-        self._seq_widget = IfritSeqWidget(ifrit_manager, icon_path=icon_path)
+        self._seq_widget = IfritSeqWidget(ifrit_manager, icon_path=icon_path,
+                                          file_registry=file_registry)
         # Seq writes straight to the in-memory monster on every edit and self-reports via data_edited
         # (so it is excluded from the generic widget scan in _connect_dirty_signals). The pane just
         # dirties + records an undo step; nothing is deferred to Save for it.
@@ -581,7 +583,9 @@ class IfritMonsterWidget(QWidget):
         lp = QVBoxLayout(left_panel)
         lp.setContentsMargins(4, 4, 0, 4)
         lp.setSpacing(2)
+        self._file_search = ListSearchBar(self._file_list)  # Ctrl+F over the loaded files
         lp.addWidget(QLabel("Loaded files"))
+        lp.addWidget(self._file_search)
         lp.addWidget(self._file_list, 1)
 
         self._splitter = QSplitter(Qt.Orientation.Horizontal)
@@ -923,7 +927,8 @@ class IfritMonsterWidget(QWidget):
         except Exception:
             pass
         pane = IfritFilePane(manager, f['path'], self.settings, self.icon_path,
-                             weapon_provider=self._weapon_options_for)
+                             weapon_provider=self._weapon_options_for,
+                             file_registry=self.file_registry)
         pane.dirty_changed.connect(lambda entry=f: self._on_pane_dirty(entry))
         pane.edited.connect(self._on_active_edited)          # every edit -> (debounced) undo snapshot
         f['pane'] = pane

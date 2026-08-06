@@ -8,6 +8,7 @@ from PyQt6.QtWidgets import (QWidget, QPushButton, QVBoxLayout, QHBoxLayout,
 from Common.filebinding import FileBinding
 from Common.fileregistry import FileRegistry
 from FF8GameData.gamedata import GameData
+from SmallWidget.listsearchbar import ListSearchBar
 from Odine.odinemanager import OdineManager
 
 CATEGORIES = [
@@ -45,8 +46,10 @@ class OdineWidget(QWidget):
         self.available_list = QListWidget()
         self.available_list.setFixedWidth(220)
         self.available_list.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
+        self.available_search = ListSearchBar(self.available_list)  # Ctrl+F over the spell pool
         available_group = QGroupBox("Available spells")
         available_layout = QVBoxLayout()
+        available_layout.addWidget(self.available_search)
         available_layout.addWidget(self.available_list)
         available_group.setLayout(available_layout)
 

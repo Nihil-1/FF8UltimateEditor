@@ -55,7 +55,9 @@ jobs:
         shell: bash
         run: |
           python -m pip install --upgrade pip
-          pip install pytest
+          # xdist alongside pytest: pytest.ini runs the suite in parallel (-n auto), so it is
+          # needed to start at all, not just to go faster.
+          pip install pytest pytest-xdist
           if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
           if [ -f FF8GameData/requirements.txt ]; then pip install -r FF8GameData/requirements.txt; fi
 

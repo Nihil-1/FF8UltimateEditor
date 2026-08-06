@@ -10,6 +10,7 @@ from Common.filebinding import FileBinding
 from Common.fileregistry import FileRegistry
 from FF8GameData.gamedata import GameData
 from FF8GameData.menu.magpage import MagPageEntry, UNUSED_ID
+from SmallWidget.listsearchbar import ListSearchBar
 from Zone.zonemanager import (ZoneManager, TEXTURE_CATEGORIES, DUEL_MOVE_NAMES,
                               ANGELO_MOVE_NAMES, BOOK_TEXT_FIRST_RAW_FILE)
 from Zone.zonerender import (PageRenderer, BUTTON_STYLE_BOXES, BUTTON_STYLE_ICONS,
@@ -75,10 +76,11 @@ class ZoneWidget(QWidget):
                                      read_only=True),
         }
 
-        # Entry list (left)
+        # Entry list (left), with a Ctrl+F search bar filtering it
         self.entry_list = QListWidget()
         self.entry_list.setFixedWidth(240)
         self.entry_list.currentRowChanged.connect(self._entry_changed)
+        self.entry_search = ListSearchBar.wrap(self.entry_list)
 
         # Entry form (right, scrollable)
         form_widget = QWidget()
@@ -97,7 +99,7 @@ class ZoneWidget(QWidget):
 
         self.editor_container = QWidget()
         editor_layout = QHBoxLayout()
-        editor_layout.addWidget(self.entry_list)
+        editor_layout.addWidget(self.entry_search.column)
         editor_layout.addWidget(scroll)
         editor_layout.addWidget(self._build_preview_group())
         self.editor_container.setLayout(editor_layout)
@@ -381,7 +383,7 @@ class ZoneWidget(QWidget):
         self.entry_list.clear()
         for index in range(len(self.manager.entries)):
             self.entry_list.addItem(f"{index}: {self.manager.entry_name(index)}")
-        self.entry_list.setCurrentRow(0)
+        self.entry_search.select_first_match()  # Row 0, or the first match if a search is typed in
         self._autoload_complementary(file_name)
 
     def _autoload_complementary(self, main_path):

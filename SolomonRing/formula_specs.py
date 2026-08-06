@@ -634,7 +634,7 @@ def _physical_damage(value, P, entry):
 
 
 def _crit_chance(value, P, entry):
-    # Damage_RollCrit @0x492b60: crit if random byte 0..255 <= critBonus + LUCK. The kernel byte
+    # Damage_RollCrit @0x492b30: crit if random byte 0..255 <= critBonus + LUCK. The kernel byte
     # feeding this is named crit_bonus on Weapons/Enemy attacks/Blue Magic and crit_increase on
     # Shot - confirmed the SAME roll for all 4 via their RELATED_TO_CRIT_BONUS write sites in
     # Battle_applyDamage (0x4901e9 Blue Magic, 0x49041e default/weapon+enemy-attack+Shot dispatch).
@@ -647,12 +647,42 @@ def _crit_chance(value, P, entry):
         "symbolic": "crit if  rand(0..255) ≤ thisValue + LUCK",
         "substituted": f"{value} + {luck} = {thr}   (threshold out of 256)",
         "result": f"≈ {pct:.1f}% critical-hit chance",
-        "note": "Damage_RollCrit @0x492b60: this value plus the attacker's LUCK is the threshold; "
+        "note": "Damage_RollCrit @0x492b30: this value plus the attacker's LUCK is the threshold; "
                 "a random byte (0-255) ≤ it crits, doubling physical damage. (The wiki's old "
                 "255×(critBonus+LUCK)/255 is the same value — the ×255/255 is a no-op.) Verified "
                 "for Weapons, Enemy attacks, Blue Magic and Shot - all four feed the identical roll.",
         "latex": r"P(crit) = \frac{value + LUCK}{256}",
         "latex_sub": rf"\frac{{{value} + {luck}}}{{256}}\approx {pct:.1f}\%",
+    }
+
+
+def _crit_chance_monster(value, P, entry):
+    # Same Damage_RollCrit roll, but the attacker is a MONSTER, and a monster has no LUCK stat:
+    # setMonsterInfoFromDatInfoSection @0x48bbd0 writes charaStat[5] (LUCK) = 0 at load and nothing
+    # ever writes it again for a monster slot (the monster .dat info section only carries
+    # HP/STR/VIT/MAG/SPR/SPD/EVA curves - there is no LUCK curve). Damage_RollCrit reads exactly
+    # that byte, so the LUCK term is a hard 0 here and this kernel byte alone decides the chance.
+    # Hence no editable LUCK parameter: offering one would only invite a wrong assumption.
+    thr = min(255, value)
+    pct = (thr + 1) / 256 * 100 if thr > 0 else 0.0
+    return {
+        "params": (),
+        "symbolic": "crit if  rand(0..255) ≤ thisValue     (monster LUCK is always 0)",
+        "substituted": f"{value} + 0 = {thr}   (threshold out of 256)",
+        "result": f"≈ {pct:.1f}% critical-hit chance"
+                  + ("   — 255 = always crits" if value >= 255 else ""),
+        "note": "Damage_RollCrit @0x492b30 adds the attacker's LUCK (charaStat[5]) to this value, "
+                "but a monster's LUCK is hard-set to 0 by setMonsterInfoFromDatInfoSection "
+                "@0x48bbd0 and never changes - monsters have no LUCK stat in their .dat. So for "
+                "enemy attacks the chance is exactly thisValue/256 and this byte is the ONLY source "
+                "of crits for a monster. A crit doubles the physical damage (and fires the white "
+                "screen flash). Only crit-rolling Attack Types use it: Physical (1), % physical (7), "
+                "Physical ignore VIT (36) - on any other Attack Type this byte is inert.",
+        # No \underbrace / \text here: matplotlib's mathtext (formula_latex.render) doesn't
+        # support them and would silently fall back to the plain-text formula.
+        "latex": r"P(crit) = \frac{value + LUCK_{monster}}{256} = \frac{value}{256}"
+                 r"\quad (LUCK_{monster} = 0)",
+        "latex_sub": rf"\frac{{{value} + 0}}{{256}}\approx {pct:.1f}\%",
     }
 
 
@@ -941,6 +971,7 @@ FORMULAS = {
     "char_exp": ("Character EXP curve", _char_exp),
     "physical_damage": ("Physical damage", _physical_damage),
     "weapon_crit": ("Critical-hit chance", _crit_chance),
+    "monster_crit": ("Critical-hit chance (monster attacker)", _crit_chance_monster),
     "weapon_hit": ("Hit rate", _weapon_hit),
     "status_accuracy": ("Status inflict chance", _status_accuracy),
 }

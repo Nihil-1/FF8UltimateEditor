@@ -120,7 +120,7 @@ class BattleContext:
                  target_effect_y_offset_f0=0, target_effect_y_offset_f1=0,
                  weapon_word_28=0, weapon_word_30=0, weapon_word_32=0,
                  original_scene_out_x=0, neutral_scale=_PSX_ONE, idle_sequence_id=1,
-                 seed=0):
+                 target_position=None, effect_signal_ready=True, seed=0):
         self.own_slot = own_slot                      # C3 0x1B
         self.target_slot = target_slot                # C3 0x18
         self.target_is_self = target_is_self          # C3 0x10 / 0x11
@@ -154,6 +154,19 @@ class BattleContext:
         # initAnimationSequenceAtStartBattle @0x5027D0 sets it to 1 for every entity at
         # battle start; A3 and E5 0x0B change it while the fight runs.
         self.idle_sequence_id = idle_sequence_id
+        # Where the TARGET stands, in the entity's own raw units, for the 9E move task
+        # (a lerp of the entity's world position toward the target's - FF8_EN.exe
+        # moveEntityToTargetSmoothly @0x50F750). Straight ahead at target_distance:
+        # ahead is local -Z (attack sequences approach with NEGATIVE E5 0F forward
+        # offsets - c0m001 seq 14, Squall's run - so the facing points down -Z).
+        self.target_position = (target_position if target_position is not None
+                                else (0, 0, -target_distance))
+        # Attack/spell sequences synchronise with their (separately running) magic-effect
+        # code through control-flag bit 0x10: they poll it before each shot (c0m001 seq
+        # 11/12: read flags, AND 0x10, loop until set, then XOR it off and raise 0x20 to
+        # trigger the effect). No effect code runs in a preview, so with this True the
+        # bit reads as set and the choreography plays through instead of polling forever.
+        self.effect_signal_ready = effect_signal_ready
         self.seed = seed
 
 
@@ -169,6 +182,86 @@ EVENT_MODEL = "model"
 EVENT_FLOW = "flow"
 EVENT_MOVE = "move"
 EVENT_STATE = "state"
+
+# Short, stable names for the C3/E5 special variables, used to build the readable
+# formula of current_value (a preview showing "speed_to_target(2500) - 100" explains a
+# jump arc; the raw json descriptions are sentences and would drown it).
+SPECIAL_VAR_NAME = {
+    0x08: "state_flags", 0x09: "anim_frame", 0x0A: "anim_total", 0x0B: "base_seq",
+    0x0C: "random", 0x0D: "pos_lateral", 0x0E: "pos_vertical", 0x0F: "pos_forward",
+    0x10: "speed_to_target", 0x11: "adj_speed_to_target", 0x12: "sine", 0x13: "cosine",
+    0x14: "weapon_w28", 0x15: "weapon_w30", 0x16: "weapon_w32", 0x17: "rotation_y",
+    0x18: "target_slot", 0x19: "target_hit", 0x1A: "angle_to_target", 0x1B: "own_slot",
+    0x1C: "facing", 0x1F: "anim_status", 0x20: "hide_part", 0x22: "back_attack",
+    0x23: "camera_flag", 0x24: "scale_model", 0x25: "scale_z", 0x26: "scale_y",
+    0x27: "scale_x", 0x28: "gf_loaded", 0x29: "nb_hit", 0x2A: "anim_speed",
+    0x2C: "sceneout_x", 0x2E: "other_entity_free", 0x33: "encounter",
+    0x35: "target_fx_y_f1", 0x36: "target_fx_y_f0", 0x37: "invisible",
+}
+
+
+# What each short name MEANS, for the preview's formula tooltips. Keyed by the name as
+# it appears in a formula; the bracketed families are covered by their prefix.
+SPECIAL_VAR_GLOSSARY = {
+    "anim_frame": "current frame of the animation the entity is playing (C3 09)",
+    "anim_total": "total frames of that animation (C3 0A)",
+    "base_seq": "the idle sequence id the entity falls back to (C3 0B)",
+    "random": "random value 0..32767, seeded in the preview (C3 0C)",
+    "pos_lateral": "entity-LOCAL offset, sideways (C3/E5 0D - the vector is rotated by "
+                   "the entity's facing before being applied)",
+    "pos_vertical": "entity-LOCAL offset, vertical - PSX down-positive, negative is up "
+                    "(C3/E5 0E)",
+    "pos_forward": "entity-LOCAL offset along the FACING - negative values move toward "
+                   "the target; this is how attacks leap/run at it (C3/E5 0F)",
+    "speed_to_target": "walk speed toward the target, from its distance "
+                       "(C3 10; the distance is a preview assumption)",
+    "adj_speed_to_target": "walk speed toward the target, from its distance minus both "
+                           "combatants' speed stats (C3 11; assumed in the preview)",
+    "sine": "sine of the last E5 12 angle, 4096 = 1.0 (C3 12)",
+    "cosine": "cosine of the last E5 13 angle, 4096 = 1.0 (C3 13)",
+    "rotation_y": "the entity's Y rotation, 4096 = a full turn (C3 17)",
+    "state_flags": "animation-state control flags bitmask (C3/E5 08)",
+    "angle_to_target": "angle toward the target, 4096 = a full turn (C3 1A)",
+    "e5[": "one of the entity's 8 local variables - how the AI and earlier frames pass "
+           "values to the sequence (C3/E5 00-07)",
+    "save[": "one of the 8 saved slots, kept across sequences (C3/E5 78-7F)",
+    "stack[": "a scratch slot of the VM (C3/E5 80+)",
+}
+
+
+# The known bits of the animation-state control flags (BattleStateControlerFlag in
+# FF8_EN.exe, plus the effect-sync pair decoded from usage), for a readable rendering.
+STATE_FLAG_NAME = {0x01: "stop_base_anim", 0x02: "loop_anim", 0x04: "preparation",
+                   0x08: "dont_play_anim", 0x10: "effect_ready", 0x20: "effect_fire",
+                   0x40: "continue_fight", 0x80: "unk_80_after_hit",
+                   0x100: "take_damage", 0x200: "effect_done"}
+
+
+def state_flags_text(value) -> str:
+    """The flags value with its set bits named: '144 = effect_ready | 0x80'."""
+    if not value:
+        return "0"
+    name_list = [name for bit, name in STATE_FLAG_NAME.items() if value & bit]
+    unknown = value & ~sum(STATE_FLAG_NAME)
+    if unknown:
+        name_list.append(hex(unknown))
+    return f"{value} = " + " | ".join(name_list)
+
+
+def special_var_name(parameter) -> str:
+    """The short name of a C3/E5 special variable parameter."""
+    if parameter <= 0x07:
+        return f"e5[{parameter}]"
+    if parameter >= 0x80:
+        return f"stack[{parameter:02X}]"
+    if parameter >= 0x78:
+        return f"save[{0x7F - parameter}]"
+    return SPECIAL_VAR_NAME.get(parameter, f"var[{parameter:02X}]")
+
+
+# Symbol per arithmetic family (op_code & 0xFC), for the same formula.
+_OPERATION_SYMBOL = {0xC4: "+", 0xC8: "-", 0xCC: "*", 0xD0: "/", 0xD4: "&",
+                     0xD8: "|", 0xDC: "^", 0xE0: "%"}
 
 _EVENT_KIND_BY_OP_CODE = {
     0x80: EVENT_MODEL, 0x81: EVENT_MODEL, 0x83: EVENT_MODEL, 0x84: EVENT_EFFECT,
@@ -189,9 +282,11 @@ _EVENT_KIND_BY_OP_CODE = {
 class ExecutedCommand:
     """One command the interpreter ran, on the frame it ran on."""
 
-    __slots__ = ("seq_id", "address", "op_code", "description", "kind", "is_background")
+    __slots__ = ("seq_id", "address", "op_code", "description", "kind", "is_background",
+                 "parameters", "value_note")
 
-    def __init__(self, seq_id, address, op_code, description, kind, is_background=False):
+    def __init__(self, seq_id, address, op_code, description, kind, is_background=False,
+                 parameters=b""):
         self.seq_id = seq_id
         self.address = address
         self.op_code = op_code
@@ -200,6 +295,14 @@ class ExecutedCommand:
         # Run by the background sequence (9A) rather than by the main one: the editor
         # should not highlight it as the current line of the sequence being previewed.
         self.is_background = is_background
+        # The command's raw parameter bytes: what a consumer that REPLAYS the event (the
+        # preview playing a B5's sound) needs, and the description alone cannot give back.
+        self.parameters = bytes(parameters)
+        # For the value-flow commands, what actually happened, with the formula: an E5
+        # write reads "pos_y ← speed(2500) - 100 = 2400", a conditional jump
+        # "if > 0: anim_total(5) - 1 = 4 → taken". Filled in by the interpreter AFTER
+        # the command ran (the outcome is not knowable before).
+        self.value_note = ""
 
     def __repr__(self):
         return (f"ExecutedCommand(seq {self.seq_id} @0x{self.address:X} "
@@ -210,25 +313,44 @@ class SequenceFrame:
     """The entity's state on one battle frame, and what ran to get there."""
 
     __slots__ = ("index", "seq_id", "address", "anim_id", "anim_frame", "anim_total",
-                 "position", "rotation_y", "scale", "current_value", "hidden_part_mask",
-                 "is_waiting_animation", "command_list")
+                 "position", "move_position", "rotation_y", "scale", "current_value",
+                 "value_expression", "hidden_part_mask", "is_waiting_animation",
+                 "command_list", "state_flags", "local_value_list", "saved_value_list")
 
     def __init__(self, index, seq_id, address, anim_id, anim_frame, anim_total, position,
                  rotation_y, scale, current_value, hidden_part_mask, is_waiting_animation,
-                 command_list):
+                 command_list, move_position=(0, 0, 0), value_expression="",
+                 state_flags=0, local_value_list=(0,) * 8, saved_value_list=(0,) * 8):
         self.index = index                  # battle frame number, 0 based
         self.seq_id = seq_id                # sequence the interpreter is in
         self.address = address              # where it resumes/resumed in that sequence
         self.anim_id = anim_id              # animation being played, None before the first
         self.anim_frame = anim_frame        # which frame of it is drawn on this battle frame
         self.anim_total = anim_total
-        self.position = position            # (x, y, z) as the sequence has moved it
+        # ENTITY-LOCAL offset the sequence wrote (E5 0D/0E/0F): (lateral, vertical,
+        # forward-along-facing). The engine rotates it by the entity's own rotation
+        # before adding it to the world position (pre_pre_linkedToAnimationSequence:
+        # someCameraWork loads ComposeZYX(based_rotation) into the GTE, then MVMVA on
+        # this vector) - forward is how attacks leap/run toward the target.
+        self.position = position
+        # (x, y, z) the 9E move task has transported the WHOLE entity by - a separate
+        # layer from `position` (the engine keeps them in different fields: based_position
+        # vs the VM's own position offsets), so both apply to where the model is drawn.
+        self.move_position = move_position
         self.rotation_y = rotation_y
         self.scale = scale                  # (model, x, y, z)
         self.current_value = current_value
+        # The formula that built current_value (battle reads as name(value)), for a
+        # display that explains the number instead of just stating it.
+        self.value_expression = value_expression
         self.hidden_part_mask = hidden_part_mask
         self.is_waiting_animation = is_waiting_animation
         self.command_list = command_list    # [ExecutedCommand] run on this frame
+        # The entity's VM-visible variables on this frame, for a watch panel: the
+        # control flags and the two 8-slot variable banks (C3/E5 00-07 and 78-7F).
+        self.state_flags = state_flags
+        self.local_value_list = tuple(local_value_list)
+        self.saved_value_list = tuple(saved_value_list)
 
     def event_list(self):
         """The commands worth a marker on a timeline (everything but plain state work)."""
@@ -361,6 +483,7 @@ class _Interpreter:
         # itself (c0m001's entrance, B5.. A8 01 A2, would otherwise chain into itself).
         self.base_seq_id = context.idle_sequence_id
         self.queued_seq_id = None      # set by A7-like chaining, consumed by A2/A3
+        self.pending_seq_id = None     # queued by AC: the driver starts it NEXT frame
         self.current_value = 0
         self.local_value = [0] * 8     # e5_data_saved[0..7], C3/E5 0x00-0x07
         self.saved_value = [0] * 8     # E5_7F_save[0..7], C3/E5 0x78-0x7F
@@ -370,8 +493,30 @@ class _Interpreter:
         self.position = [0, 0, 0]      # x, y, z
         self.rotation_y = 0
         self.scale = [context.neutral_scale] * 4  # model, x, y, z
+        # How current_value was built, as a readable formula mirroring the arithmetic
+        # exactly (left-to-right like the VM applies it, battle reads shown as
+        # name(value)). Not part of the loop-detection state: it mirrors the value.
+        self.value_expression = "0"
+        # The formula stored into each VM scratch slot (e5 locals, save, stack) by its
+        # last E5 write: reading the slot back splices the stored formula in, so
+        # "stack[FD]" becomes the "(0 - e5[2]) * anim_frame / anim_total" it stands for.
+        self.slot_expression = {}
         self.anim_speed_factor = 0
         self.hidden_part_mask = 0
+        # C3/E5 0x08: the entity's animation-state control flags. Seeded from the battle
+        # context, then owned by the sequence once it writes them (seq 14 of c0m001 does
+        # `C3 08 / DA 80 / E5 08`), so a read-after-write sees the written value.
+        self.state_flags = context.battle_state_flags
+        self.state_flags_written = False
+
+        # --- 9E transport (moveEntityToTargetSmoothly @0x50F750): a lerp of the WHOLE
+        # entity from its resting spot toward the target, run as a parallel task that
+        # ticks once per battle frame. move_anchor is original_sceneout_position (where
+        # the lerp starts from, updated to the arrival point when it completes) and
+        # move_position the current based_position - both (x, z), the engine moves no Y.
+        self.move_anchor = [0, 0]
+        self.move_position = [0, 0]
+        self.move_task = None          # (counter, duration, target_x, target_z) while moving
 
         # --- animation state
         self.anim_id = None
@@ -382,6 +527,7 @@ class _Interpreter:
         self.wait_frame = 0            # frames still to skip because of B9
 
         # --- per-frame collection
+        self._value_note = ""          # set by the op that just ran, attached after it
         self.command_list = []
         self.chained_seq_id = set()    # sequences entered through A2 on the current frame
         self.background_used = set()   # background sequences that actually ran
@@ -418,7 +564,8 @@ class _Interpreter:
             description = ""
         self.command_list.append(ExecutedCommand(self.seq_id, command.address,
                                                  command.op_code, description, kind,
-                                                 is_background))
+                                                 is_background,
+                                                 bytes(command.parameters or b"")))
 
     def _assume(self, parameter, what, value):
         self.assumption_list.append((self.frame_index, parameter, what, value))
@@ -432,11 +579,13 @@ class _Interpreter:
         """Everything that decides the future. Two frames with the same key play the same
         thing forever after, which is exactly what "this sequence loops" means."""
         return (self.seq_id, self.address, self.background_seq_id, self.base_seq_id,
-                self.queued_seq_id, self.current_value, tuple(self.local_value),
-                tuple(self.saved_value), tuple(sorted(self.stack.items())), self.sine,
+                self.queued_seq_id, self.pending_seq_id, self.current_value,
+                tuple(self.local_value), tuple(self.saved_value),
+                tuple(sorted(self.stack.items())), self.sine,
                 self.cosine, tuple(self.position), self.rotation_y, tuple(self.scale),
-                self.anim_speed_factor, self.hidden_part_mask, self.anim_id,
-                self.anim_frame, self.anim_total, self.anim_loops,
+                self.anim_speed_factor, self.hidden_part_mask, self.state_flags,
+                tuple(self.move_anchor), tuple(self.move_position), self.move_task,
+                self.anim_id, self.anim_frame, self.anim_total, self.anim_loops,
                 self.is_waiting_animation, self.wait_frame)
 
     # -------------------------------------------------------------- frame driver
@@ -449,6 +598,13 @@ class _Interpreter:
         """
         self.command_list = []
         self.chained_seq_id = set()
+
+        # 0. A sequence AC queued last frame becomes the current one now, from its start
+        # (the driver resolves nextSeqIndex at the top of the frame).
+        if self.pending_seq_id is not None:
+            self.seq_id = self.pending_seq_id
+            self.address = 0
+            self.pending_seq_id = None
 
         # 1. The background sequence (9A) runs first, from its start, every frame.
         if self.background_seq_id and self._sequence(self.background_seq_id) is not None:
@@ -472,12 +628,36 @@ class _Interpreter:
                               min(self.anim_frame, max(self.anim_total - 1, 0)),
                               self.anim_total, tuple(self.position), self.rotation_y,
                               tuple(self.scale), self.current_value, self.hidden_part_mask,
-                              self.is_waiting_animation, self.command_list)
+                              self.is_waiting_animation, self.command_list,
+                              (self.move_position[0], 0, self.move_position[1]),
+                              self.value_expression, self.state_flags,
+                              tuple(self.local_value), tuple(self.saved_value))
 
-        # 4. The animation advances one frame, after the frame it drew.
+        # 4. The animation advances one frame, and the parallel tasks (the 9E transport)
+        # tick once, after the frame they drew - like the engine's per-frame task queue.
+        self._tick_move_task()
         self._advance_animation()
         self.frame_index += 1
         return frame
+
+    def _tick_move_task(self):
+        """One tick of moveEntityToTargetSmoothly @0x50F750: pos = origin +
+        (counter<<12)/duration * (target - origin) >> 12, arrival committed into the
+        anchor (original_sceneout_position) when counter reaches the duration."""
+        if self.move_task is None:
+            return
+        counter, duration, target_x, target_z = self.move_task
+        counter += 1
+        ratio = (counter << 12) // duration
+        self.move_position[0] = self.move_anchor[0] + (
+            (ratio * (target_x - self.move_anchor[0])) >> 12)
+        self.move_position[1] = self.move_anchor[1] + (
+            (ratio * (target_z - self.move_anchor[1])) >> 12)
+        if counter >= duration:
+            self.move_anchor = [target_x, target_z]
+            self.move_task = None
+        else:
+            self.move_task = (counter, duration, target_x, target_z)
 
     def _advance_animation(self):
         if self.anim_id is None or self.anim_total <= 0:
@@ -510,7 +690,10 @@ class _Interpreter:
                                            f"(A2/A9) and no jump back")
                 break
             self._record(command, is_background)
+            self._value_note = ""
             next_address, pause = self._execute(command, address)
+            if self._value_note and self.command_list:
+                self.command_list[-1].value_note = self._value_note
             if self.stop_reason is not None:
                 break
             address = next_address
@@ -560,6 +743,21 @@ class _Interpreter:
         if op_code == 0x95:                       # reset position (X and Z)
             self.position[0] = 0
             self.position[2] = 0
+        elif op_code == 0x9E and len(parameters) >= 2:  # move to an entity's position
+            # AddTaskToQueueAnimSeq_Anim9E @0x50F720: a parallel task lerping the whole
+            # entity from its resting spot to entity `parameters[0]`'s position over
+            # `parameters[1]` frames. The other entity's position lives in the battle,
+            # not in the file: the target's assumed spot is used (own slot = stay put).
+            slot = parameters[0]
+            duration = max(parameters[1], 1)
+            if slot == self.context.own_slot:
+                target_x, target_z = self.move_anchor
+            else:
+                target_x = self.context.target_position[0]
+                target_z = self.context.target_position[2]
+                self._assume(None, f"position of the slot {slot} entity (9E move)",
+                             f"({target_x}, {target_z})")
+            self.move_task = (0, duration, target_x, target_z)
         elif op_code == 0x9A and parameters:      # background sequence id (0 clears it)
             self.background_seq_id = parameters[0]
         elif op_code == 0xA0 and parameters:      # play animation without pausing
@@ -580,7 +778,14 @@ class _Interpreter:
             return next_address, True
         elif op_code == _PAUSE_RESTORE and parameters:  # AC: restore model, queue, end
             self.rotation_y = 0
-            self._stop(STOP_END, f"restore base model and queue sequence {parameters[0]} (AC)")
+            self.hidden_part_mask = 0   # "restore base model": hidden parts come back
+            queued = parameters[0]
+            if self.follow_chain and self._sequence(queued) is not None:
+                # The queued sequence IS what the entity plays next: continue into it
+                # (from its start, next frame) instead of cutting the preview short.
+                self.pending_seq_id = queued
+                return next_address, True
+            self._stop(STOP_END, f"restore base model and queue sequence {queued} (AC)")
             return next_address, True
         elif op_code == _PAUSE_YIELD:             # A1
             return next_address, True
@@ -642,6 +847,12 @@ class _Interpreter:
         if op_code == 0xE5:  # write current_value somewhere
             if parameters:
                 self._write_special(parameters[0], self.current_value)
+                if parameters[0] <= 0x77:
+                    # An engine variable (or an e5 local) took the value: THIS is what
+                    # the computation was for - scratch slots stay quiet, their formula
+                    # resurfaces spliced into the write that finally matters.
+                    self._value_note = (f"{special_var_name(parameters[0])} ← "
+                                        f"{self._formula_text()}")
             return next_address, False
 
         if op_code >= 0xE6:  # the jumps
@@ -649,6 +860,53 @@ class _Interpreter:
 
         value = self._read_operand(op_code, parameters)
         operation = op_code & 0xFC
+        # The formula, kept in step with the value: a battle read shows its name AND the
+        # value it had, so "speed_to_target(2500) - 100" reads at a glance. The VM
+        # applies operators strictly left to right, so the accumulated part is
+        # parenthesised before the next operator to keep the formula truthful.
+        spliced = None
+        if (op_code & 3) == 3 and parameters:
+            parameter = parameters[0]
+            stored = self.slot_expression.get(parameter)
+            # A scratch slot stands for the formula stored into it: splice that in
+            # (capped - past that, the name(value) fallback stays readable; a plain
+            # stored number adds nothing over the value itself).
+            if stored is not None and stored != str(value) and len(stored) <= 90:
+                spliced = stored
+                operand_expression = stored if " " not in stored else f"({stored})"
+            else:
+                operand_expression = f"{special_var_name(parameter)}({value})"
+        else:
+            operand_expression = str(value)
+        if operation == 0xC0:
+            # An assignment takes the operand as-is - a spliced formula needs no parens
+            # of its own at the top level.
+            self.value_expression = spliced if spliced is not None else operand_expression
+        else:
+            symbol = _OPERATION_SYMBOL.get(operation, "?")
+            accumulated = self.value_expression
+            # No-ops stay out of the formula: "x - 0" or "x * 1" only bury the parts
+            # that matter (sequences use them as neutral scaffolding all the time).
+            # The arithmetic below still runs them - only the formula skips them.
+            if ((operand_expression == "0" and symbol in "+-")
+                    or (operand_expression == "1" and symbol in "*/")):
+                pass
+            elif accumulated == "0" and symbol == "+":
+                # "0 + x" is just x (the C1 00 / C7 xx accumulator idiom).
+                self.value_expression = (spliced if spliced is not None
+                                         else operand_expression)
+            else:
+                if len(accumulated) > 100:  # an assignment-free loop grows it forever
+                    accumulated = "…"
+                if " " in accumulated:
+                    accumulated = f"({accumulated})"
+                # "x + -1" is really "x - 1": fold the sign into the operator when the
+                # operand is a plain negative literal.
+                if (symbol in "+-" and operand_expression.startswith("-")
+                        and operand_expression[1:].isdigit()):
+                    symbol = "-" if symbol == "+" else "+"
+                    operand_expression = operand_expression[1:]
+                self.value_expression = f"{accumulated} {symbol} {operand_expression}"
         if operation == 0xC0:
             self.current_value = value
         elif operation == 0xC4:
@@ -681,6 +939,16 @@ class _Interpreter:
             return parameters[0] if parameters else 0
         return self._read_special(parameters[0] if parameters else 0)
 
+    _JUMP_CONDITION_TEXT = {1: "> 0", 2: ">= 0", 3: "== 0", 4: "!= 0",
+                            5: "<= 0", 6: "< 0"}
+
+    def _formula_text(self) -> str:
+        """current_value with the formula that built it ("f = v"), or just the value
+        when there is no formula to tell."""
+        if self.value_expression and self.value_expression != str(self.current_value):
+            return f"{self.value_expression} = {self.current_value}"
+        return str(self.current_value)
+
     def _execute_jump(self, op_code, parameters, address, next_address):
         target = get_jump_target(address, op_code, parameters)
         if target is None:
@@ -694,6 +962,10 @@ class _Interpreter:
                  or (condition_index == 4 and value != 0)
                  or (condition_index == 5 and value <= 0)
                  or (condition_index == 6 and value < 0))
+        if condition_index != 0:
+            self._value_note = (f"if value {self._JUMP_CONDITION_TEXT[condition_index]}"
+                                f": {self._formula_text()} → "
+                                f"{'taken' if taken else 'not taken'}")
         if not taken:
             return next_address, False
         data = self._sequence(self.seq_id)
@@ -714,7 +986,19 @@ class _Interpreter:
         if parameter >= 0x78:  # E5_7F_save, indexed backwards from 0x7F
             return self.saved_value[0x7F - parameter]
         if parameter == 0x08:
-            return self._assume(parameter, "battle state flags", context.battle_state_flags)
+            # Animation-state control flags (BattleStateControlerFlag bitmask). Once the
+            # sequence writes them (E5 08), it owns the value - only the INITIAL value is
+            # a battle assumption. Bit 0x10 is the effect code's "ready" signal: unless
+            # the context says otherwise it reads as set (and is said so), or every
+            # attack sequence would poll it forever with no effect code running.
+            value = self.state_flags
+            if context.effect_signal_ready and not value & 0x10:
+                value |= 0x10
+                self._assume(parameter, "effect-code handshake (flag bit 0x10)",
+                             "assumed ready")
+            if self.state_flags_written:
+                return value
+            return self._assume(parameter, "animation-state control flags", value)
         if parameter == 0x09:
             return self.anim_frame
         if parameter == 0x0A:
@@ -724,11 +1008,11 @@ class _Interpreter:
         if parameter == 0x0C:
             return self._assume(parameter, "random value", self.random.randint(0, 32767))
         if parameter == 0x0D:
-            return self.position[2]
-        if parameter == 0x0E:
             return self.position[0]
-        if parameter == 0x0F:
+        if parameter == 0x0E:
             return self.position[1]
+        if parameter == 0x0F:
+            return self.position[2]
         if parameter in (0x10, 0x11):
             return self._assume(parameter, "speed factor toward the target",
                                 self._speed_factor(parameter))
@@ -801,6 +1085,10 @@ class _Interpreter:
 
     def _write_special(self, parameter, value):
         """E5 write (FF8_EN.exe AnimSeq_WriteSpecialVar_E5)."""
+        if parameter >= 0x78 or parameter <= 0x07:
+            # A pure VM scratch slot: remember the formula it now stands for (engine
+            # fields like positions keep their own name instead - clearer than a splice).
+            self.slot_expression[parameter] = self.value_expression
         if parameter >= 0x80:
             self.stack[parameter] = value
             return
@@ -808,14 +1096,17 @@ class _Interpreter:
             self.local_value[parameter] = value
         elif parameter >= 0x78:
             self.saved_value[0x7F - parameter] = value
+        elif parameter == 0x08:
+            self.state_flags = value
+            self.state_flags_written = True
         elif parameter == 0x0B:
             self.base_seq_id = value
         elif parameter == 0x0D:
-            self.position[2] = value
-        elif parameter == 0x0E:
             self.position[0] = value
-        elif parameter == 0x0F:
+        elif parameter == 0x0E:
             self.position[1] = value
+        elif parameter == 0x0F:
+            self.position[2] = value
         elif parameter == 0x12:
             self.sine = _compute_sin(value)
         elif parameter == 0x13:
@@ -834,6 +1125,44 @@ class _Interpreter:
             self.anim_speed_factor = value
         elif parameter == 0x2C:
             self.position[0] = value
+
+
+def _annotate_local_writes(frame_list):
+    """Append to each e5[0..7] write note where the slot is next read and what that
+    computation feeds - the "what is it FOR" of a stored value (seq 14 of c0m001 parks
+    the jump height in e5[2] on frame 0 and only turns it into pos_y from frame 27).
+
+    Only the e5 locals: they are the VM's cross-frame variables. Engine vars (pos_y,
+    state_flags...) are consumed by the engine itself, so "never read" would be wrong.
+    """
+    flat = [(frame.index, command) for frame in frame_list
+            for command in frame.command_list if not command.is_background]
+    for position, (_frame_index, command) in enumerate(flat):
+        if (command.op_code != 0xE5 or not command.value_note
+                or not command.parameters or command.parameters[0] > 0x07):
+            continue
+        slot = command.parameters[0:1]
+        suffix = " — never read afterwards"
+        for later_position in range(position + 1, len(flat)):
+            later_index, later = flat[later_position]
+            op_code = later.op_code
+            if op_code == 0xE5 and later.parameters[:1] == slot:
+                suffix = f" — overwritten on frame {later_index}, unread"
+                break
+            if (0xC0 <= op_code <= 0xE3 and (op_code & 3) == 3
+                    and later.parameters[:1] == slot):
+                # Found the read: what does that computation end up feeding? The first
+                # noted command after it - an engine write or a branch - names it
+                # (scratch hops carry no note and are skipped by construction).
+                purpose = ""
+                for _frame, feed in flat[later_position + 1:]:
+                    if feed.value_note:
+                        purpose = (f" ({feed.value_note.split(' ←')[0]})"
+                                   if feed.op_code == 0xE5 else " (a branch decision)")
+                        break
+                suffix = f" — used from frame {later_index}{purpose}"
+                break
+        command.value_note += suffix
 
 
 def bake_sequence(vm, sequence_by_id, seq_id, animation_frame_count, context=None,
@@ -882,6 +1211,7 @@ def bake_sequence(vm, sequence_by_id, seq_id, animation_frame_count, context=Non
     else:
         interpreter._stop(STOP_MAX_FRAMES)
 
+    _annotate_local_writes(frame_list)
     return BakeResult(frame_list, interpreter.stop_reason or STOP_MAX_FRAMES,
                       interpreter.stop_detail, loop_from, interpreter.assumption_list,
                       sorted(interpreter.background_used))

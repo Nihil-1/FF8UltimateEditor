@@ -8,6 +8,7 @@ from PyQt6.QtWidgets import (QWidget, QPushButton, QVBoxLayout, QHBoxLayout, QLa
 
 from FF8GameData.gamedata import GameData
 from Shiva.ShivaSeedTest.seedtest import SeedString, SeedTestSet
+from SmallWidget.listsearchbar import ListSearchBar
 from Shiva.ShivaSeedTest.seedfont import (SeedFontMetrics, layout_text, overflows, LINE_HEIGHT,
                                           VANILLA_MAX_WIDTH, VANILLA_MAX_LINES)
 
@@ -226,10 +227,11 @@ class ShivaSeedTestWidget(QWidget):
         csv_layout.addWidget(self.import_csv_button)
         csv_layout.addStretch(1)
 
-        # Test list (left side)
+        # Test list (left side), with a Ctrl+F search bar filtering it
         self.section_list = QListWidget()
         self.section_list.setFixedWidth(180)
         self.section_list.currentRowChanged.connect(self.reload_selected_section)
+        self.section_search = ListSearchBar.wrap(self.section_list)
 
         # Question editors (middle, scrollable)
         self.question_container = QWidget()
@@ -252,7 +254,7 @@ class ShivaSeedTestWidget(QWidget):
         preview_column.addStretch(1)
 
         main_editor_layout = QHBoxLayout()
-        main_editor_layout.addWidget(self.section_list)
+        main_editor_layout.addWidget(self.section_search.column)
         main_editor_layout.addWidget(self.question_scroll, 1)
         main_editor_layout.addLayout(preview_column)
 

@@ -6,6 +6,7 @@ from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel, QListWid
 
 from FF8GameData.m00x.dataclass import TypeId
 from Shiva.ShivaRefine.refineview import build_refine_views
+from SmallWidget.listsearchbar import ListSearchBar
 
 
 class ShivaRefineWidget(QWidget):
@@ -27,10 +28,11 @@ class ShivaRefineWidget(QWidget):
         self.game_data = game_data
         self.refine_views = []
 
-        # Refine ability list (left side)
+        # Refine ability list (left side), with a Ctrl+F search bar filtering it
         self.section_list = QListWidget()
         self.section_list.setFixedWidth(180)
         self.section_list.currentRowChanged.connect(self.reload_selected_section)
+        self.section_search = ListSearchBar.wrap(self.section_list)
 
         # Editor (right side)
         self.section_name_label = QLabel("")
@@ -57,7 +59,7 @@ class ShivaRefineWidget(QWidget):
 
         main_layout = QHBoxLayout()
         main_layout.setContentsMargins(0, 0, 0, 0)
-        main_layout.addWidget(self.section_list)
+        main_layout.addWidget(self.section_search.column)
         main_layout.addWidget(self.editor_container)
         self.setLayout(main_layout)
 

@@ -96,7 +96,7 @@ class m002bin:
                                 description='Upgrade Magic from mid level to high level', nb_entries=6,
                                 entries=[Entry() for _ in range(6)])
         self.list_data = (self.mid_mag_rf, self.high_mag_rf)
-        self.input_id = TypeId.ITEM
+        self.input_id = TypeId.SPELL
         self.output_id = TypeId.SPELL
         self.mngrp_bin_id = 108
         self.mngrp_msg_id = 113

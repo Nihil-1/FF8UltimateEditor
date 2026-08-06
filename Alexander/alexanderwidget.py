@@ -15,6 +15,7 @@ from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLa
 from Common.fileregistry import FileRegistry
 from Ifrit.Ifrit3D.ifrit3dwidget import Ifrit3DWidget
 from Alexander.alexandermanager import AlexanderManager
+from SmallWidget.listsearchbar import ListSearchBar
 
 
 class StageTextureData:
@@ -173,6 +174,9 @@ class AlexanderWidget(QWidget):
         self.stage_list = QListWidget()
         self.stage_list.setStyleSheet("background:#1a1a1f; color:white; border:none;")
         self.stage_list.currentRowChanged.connect(self._on_stage_selected)
+        self.stage_search = ListSearchBar(self.stage_list)
+        self.stage_search.setStyleSheet("QLineEdit {background:#1a1a1f; color:white; border:1px solid #3a3a3f;}")
+        ll.addWidget(self.stage_search)
         ll.addWidget(self.stage_list)
 
         self.viewer_3d = Ifrit3DWidget(self.bridge, show_controls=True)
@@ -263,7 +267,7 @@ class AlexanderWidget(QWidget):
         self.stage_list.blockSignals(False)
         self.file_label.setText(
             f"{len(names)} stage{'s' if len(names) != 1 else ''} loaded")
-        self.stage_list.setCurrentRow(0)
+        self.stage_search.select_first_match()  # Row 0, or the first match if a search is typed in
         # a0stgXXX.x has no fixed name, so it can't have its own FileBinding - list it under one
         # summary entry in the Opened files panel instead (each name when there are few, otherwise
         # just the count and folder, so opening dozens at once doesn't flood the panel).

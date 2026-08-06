@@ -224,14 +224,15 @@ class TestBattleContext:
 class TestStateAndEvents:
 
     def test_e5_writes_the_position_and_c3_reads_it_back(self, game_data):
-        # C0 E8 03 (current_value = 1000), E5 0E (write position X), then read it back
-        # into current_value with C3 0E.
+        # C0 E8 03 (current_value = 1000), E5 0E (write the local VERTICAL offset,
+        # component 1 - exe write offset +0x26), then read it back with C3 0E.
         result = _bake(game_data, [[0xC0, 0xE8, 0x03, 0xE5, 0x0E, 0xC3, 0x0E, 0xA9]])
-        assert result.frame_list[0].position[0] == 1000
+        assert result.frame_list[0].position[1] == 1000
         assert result.frame_list[0].current_value == 1000
 
-    def test_95_resets_x_and_z_but_not_y(self, game_data):
-        # Write X, Y, Z, then 95 (reset position X and Z).
+    def test_95_resets_lateral_and_forward_but_not_vertical(self, game_data):
+        # Write all three local offsets, then 95: the entity returns to its spot
+        # horizontally (lateral + forward reset) but keeps its height.
         result = _bake(game_data, [[0xC1, 0x0A, 0xE5, 0x0E, 0xE5, 0x0F, 0xE5, 0x0D,
                                     0x95, 0xA9]])
         assert result.frame_list[0].position == (0, 10, 0)
@@ -288,6 +289,97 @@ class TestStateAndEvents:
     def test_the_animations_played_are_listed_in_order(self, game_data):
         result = _bake(game_data, [[0x02, 0x00, 0x02, 0xA9]], {0: 2, 2: 2})
         assert result.animation_id_list() == [2, 0]
+
+
+class TestMoveTaskAndChaining:
+    """9E transport and AC chaining (FF8_EN.exe moveEntityToTargetSmoothly @0x50F750,
+    AddTaskToQueueAnimSeq_Anim9E @0x50F720): the entity's world position lerps toward the
+    target as a PARALLEL task while the sequence keeps running, and an AC hands over to
+    the sequence it queues instead of just stopping the preview."""
+
+    def test_9e_lerps_the_entity_to_the_target_with_the_engines_formula(self, game_data):
+        # 9E slot 0, 4 frames, then plain yields. Target assumed straight ahead at
+        # (0, 0, -2048): ahead is local -Z, the direction attack sequences approach in.
+        context = BattleContext(target_distance=2048)
+        result = _bake(game_data, [[0x9E, 0x00, 0x04, 0xA1, 0xA1, 0xA1, 0xA1, 0xA1,
+                                    0xA9]], context=context)
+        move_z = [frame.move_position[2] for frame in result.frame_list]
+        # The engine's exact curve: z = 0 + ((counter<<12)//4 * -2048) >> 12, the task
+        # ticking AFTER the frame it was queued on drew.
+        assert move_z[0] == 0
+        expected = [((((counter << 12) // 4) * -2048) >> 12) for counter in range(1, 5)]
+        assert move_z[1:5] == expected
+        assert move_z[5] == -2048                    # arrived, committed, stays
+
+    def test_the_sequence_keeps_running_while_the_move_task_ticks(self, game_data):
+        # The transport is a parallel task, not a pause: the yields cost exactly one
+        # frame each whether or not a move is in flight.
+        moving = _bake(game_data, [[0x9E, 0x00, 0x04, 0xA1, 0xA1, 0xA9]])
+        still = _bake(game_data, [[0xA1, 0xA1, 0xA9]])
+        assert moving.nb_frame == still.nb_frame
+
+    def test_moving_to_the_own_slot_stays_put(self, game_data):
+        context = BattleContext(own_slot=4)
+        result = _bake(game_data, [[0x9E, 0x04, 0x04, 0xA1, 0xA1, 0xA1, 0xA1, 0xA9]],
+                       context=context)
+        assert all(frame.move_position == (0, 0, 0) for frame in result.frame_list)
+
+    def test_the_9e_target_position_is_a_named_assumption(self, game_data):
+        result = _bake(game_data, [[0x9E, 0x00, 0x04, 0xA1, 0xA9]])
+        assert any("9E move" in what for _f, _p, what, _v in result.assumption_list)
+
+    def test_ac_continues_into_the_sequence_it_queues(self, game_data):
+        # C1 01 / E5 20 hides part 0, then AC 02: restore the model and queue sequence
+        # 2 - the preview follows it, the queued sequence starting on the NEXT frame
+        # (the driver resolves it then) with the hidden part back ("restore base model").
+        result = _bake(game_data, [[0xC1, 0x01, 0xE5, 0x20, 0xA1, 0xAC, 0x02],
+                                   [0x00, 0xA9]], {0: 3})
+        assert result.stop_reason == STOP_END
+        assert result.frame_list[0].hidden_part_mask == 1   # hidden while seq 1 runs
+        assert result.frame_list[1].seq_id == 1             # the frame AC ran on
+        assert result.frame_list[1].hidden_part_mask == 0   # model restored by AC
+        assert result.frame_list[2].seq_id == 2             # the queued one, next frame
+        assert result.frame_list[2].anim_id == 0
+
+    def test_ac_still_stops_when_not_following_the_chain(self, game_data):
+        result = _bake(game_data, [[0xAC, 0x02], [0x00, 0xA9]], {0: 3},
+                       follow_chain=False)
+        assert result.stop_reason == STOP_END
+        assert "queue sequence 2" in result.stop_detail
+
+    def test_e5_08_writes_are_seen_by_the_next_c3_08_read(self, game_data):
+        # c0m001 seq 14's own idiom: read the flags, OR 0x80, write them back. A later
+        # read must see 0x80 - and only the FIRST read is a battle assumption.
+        # effect_signal_ready off, so bit 0x10 does not ride along in the values.
+        context = BattleContext(effect_signal_ready=False)
+        result = _bake(game_data, [[0xC3, 0x08, 0xDA, 0x80, 0xE5, 0x08,
+                                    0xC3, 0x08, 0xE5, 0x00, 0xA9]], context=context)
+        assert result.frame_list[-1].command_list is not None
+        read_list = [(what, value) for _f, _p, what, value in result.assumption_list
+                     if "control flags" in what]
+        assert len(read_list) == 1                   # the second read was NOT assumed
+        # The written value landed in local 0 through the second read.
+        assert result.frame_list[0].current_value == 0x80
+
+    def test_the_effect_handshake_poll_plays_through_instead_of_hanging(self, game_data):
+        # c0m001 seq 12's missile idiom: poll control-flag bit 0x10 (set by the attack's
+        # magic-effect code, which does not run in a preview), XOR it off, fire. With the
+        # handshake assumed ready the choreography completes; without it, it polls
+        # forever - which is what the engine would honestly do with no effect running.
+        poll = [0xC3, 0x08, 0xD5, 0x10, 0xE5, 0x7F,        # @0  E5_7F = flags & 0x10
+                0xC1, 0x00, 0xCB, 0x7F,                    # @6  value = -E5_7F
+                0xE9, 0x0A,                                # @10 bit clear -> yield @20
+                0xC3, 0x08, 0xDD, 0x10, 0xE5, 0x08,        # @12 ready: XOR the bit off
+                0xE6, 0x05,                                # @18 -> fire @23
+                0xA1, 0xE6, 0xEB,                          # @20 yield, poll again @0
+                0x00, 0xA9]                                # @23 fire anim, stop
+        ready = _bake(game_data, [poll], {0: 3})
+        assert ready.stop_reason == STOP_END
+        assert 0 in ready.animation_id_list()
+        assert any("handshake" in what for _f, _p, what, _v in ready.assumption_list)
+        stuck = _bake(game_data, [poll], {0: 3},
+                      context=BattleContext(effect_signal_ready=False))
+        assert stuck.stop_reason == STOP_LOOP
 
 
 class TestVanillaData:

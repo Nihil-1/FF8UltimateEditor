@@ -11,6 +11,7 @@ from Common.fileregistry import FileRegistry
 from FF8GameData.gamedata import GameData
 from FF8GameData.menu.pagerender import PageRenderer, CANVAS_WIDTH, CANVAS_HEIGHT
 from Moomba.moombamanager import MoombaManager, MagPageEntry
+from SmallWidget.listsearchbar import ListSearchBar
 
 PREVIEW_SCALE = 2
 
@@ -45,10 +46,11 @@ class MoombaWidget(QWidget):
         self.mngrp_binding = FileBinding("mngrp.bin", file_registry,
                                          load_callback=self._apply_mngrp, read_only=True)
 
-        # Page list (left side)
+        # Page list (left side), with a Ctrl+F search bar filtering it
         self.page_list = QListWidget()
         self.page_list.setFixedWidth(240)
         self.page_list.currentRowChanged.connect(self.reload_selected_entry)
+        self.page_search = ListSearchBar.wrap(self.page_list)
 
         # Editor (right side)
         self.entry_name_label = QLabel("")
@@ -76,7 +78,7 @@ class MoombaWidget(QWidget):
         editor_scroll.setWidget(self.editor_container)
 
         main_editor_layout = QHBoxLayout()
-        main_editor_layout.addWidget(self.page_list)
+        main_editor_layout.addWidget(self.page_search.column)
         main_editor_layout.addWidget(editor_scroll)
         main_editor_layout.addWidget(self._build_preview_group())
 
@@ -312,7 +314,7 @@ class MoombaWidget(QWidget):
             self.page_list.clear()
             self.page_list.addItems([self.manager.get_entry_name(entry.entry_id)
                                      for entry in self.manager.entries])
-        self.page_list.setCurrentRow(0)
+        self.page_search.select_first_match()  # Row 0, or the first match if a search is typed in
 
     def file_bindings(self):
         """The files the shared header toolbar drives for this tab: mmag2.bin (edited) and

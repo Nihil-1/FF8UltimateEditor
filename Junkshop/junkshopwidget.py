@@ -9,6 +9,7 @@ from Common.filebinding import FileBinding
 from Common.fileregistry import FileRegistry
 from FF8GameData.gamedata import GameData
 from Junkshop.junkshopmanager import JunkshopManager, WeaponUpgrade
+from SmallWidget.listsearchbar import ListSearchBar
 
 
 class JunkshopWidget(QWidget):
@@ -43,6 +44,8 @@ class JunkshopWidget(QWidget):
         self.weapon_list = QListWidget()
         self.weapon_list.setFixedWidth(180)
         self.weapon_list.currentRowChanged.connect(self.reload_selected_weapon)
+        # Ctrl+F search bar filtering the weapon list (weapon name or weapon id)
+        self.weapon_search = ListSearchBar.wrap(self.weapon_list, match_index=True)
 
         # Editor (right side)
         self.weapon_name_label = QLabel("")
@@ -104,7 +107,7 @@ class JunkshopWidget(QWidget):
         self.editor_container.setEnabled(False)
 
         main_editor_layout = QHBoxLayout()
-        main_editor_layout.addWidget(self.weapon_list)
+        main_editor_layout.addWidget(self.weapon_search.column)
         main_editor_layout.addWidget(self.editor_container)
 
         main_layout = QVBoxLayout()
@@ -123,7 +126,7 @@ class JunkshopWidget(QWidget):
         with QSignalBlocker(self.weapon_list):
             self.weapon_list.clear()
             self.weapon_list.addItems([weapon.name for weapon in self.manager.weapon_upgrades])
-        self.weapon_list.setCurrentRow(0)
+        self.weapon_search.select_first_match()  # Row 0, or the first match if a search is typed in
 
     def save_file(self):
         if self.manager.file_path:

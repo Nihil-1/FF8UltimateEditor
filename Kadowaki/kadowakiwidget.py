@@ -9,6 +9,7 @@ from Common.filebinding import FileBinding
 from Common.fileregistry import FileRegistry
 from FF8GameData.gamedata import GameData
 from Kadowaki.kadowakimanager import KadowakiManager
+from SmallWidget.listsearchbar import ListSearchBar
 
 
 class ParamWidget(QGroupBox):
@@ -144,10 +145,11 @@ class KadowakiWidget(QWidget):
         self.mitem_binding = FileBinding("mitem.bin", file_registry,
                                          load_callback=self.load_file, save_callback=self.save_file)
 
-        # Item list (left side)
+        # Item list (left side), with a Ctrl+F search bar filtering it (item name or item id)
         self.item_list = QListWidget()
         self.item_list.setFixedWidth(180)
         self.item_list.currentRowChanged.connect(self.reload_selected_item)
+        self.item_search = ListSearchBar.wrap(self.item_list, match_index=True)
 
         # Editor (right side)
         self.item_name_label = QLabel("")
@@ -194,7 +196,7 @@ class KadowakiWidget(QWidget):
         self.editor_container.setEnabled(False)
 
         main_editor_layout = QHBoxLayout()
-        main_editor_layout.addWidget(self.item_list)
+        main_editor_layout.addWidget(self.item_search.column)
         main_editor_layout.addWidget(self.editor_container)
 
         main_layout = QVBoxLayout()
@@ -213,7 +215,7 @@ class KadowakiWidget(QWidget):
         with QSignalBlocker(self.item_list):
             self.item_list.clear()
             self.item_list.addItems([menu_item.name for menu_item in self.manager.menu_items])
-        self.item_list.setCurrentRow(0)
+        self.item_search.select_first_match()  # Row 0, or the first match if a search is typed in
 
     def save_file(self):
         if self.manager.file_path:

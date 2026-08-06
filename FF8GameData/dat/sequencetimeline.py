@@ -24,8 +24,9 @@ from .sequencebake import (STOP_END, STOP_LOOP, STOP_HANG, STOP_ERROR, STOP_MAX_
 
 # One colour per kind of thing a command does, so a timeline can be skimmed for "where is
 # the sound" without reading it. Mid-tones on purpose: they have to stay legible on the
-# light and the dark palette alike, since the app does not fix one.
-_COLOUR_BY_KIND = {
+# light and the dark palette alike, since the app does not fix one. Public: the graphical
+# timeline widget uses the same colours, so the two renderings can never disagree.
+COLOUR_BY_KIND = {
     EVENT_ANIMATION: "#7fa650",
     EVENT_SOUND: "#4f8fc0",
     EVENT_EFFECT: "#c07f4f",
@@ -209,7 +210,7 @@ def format_timeline_html(result, include_background=False) -> str:
                 command_html.append(f"<div style='color:#909090'><i>"
                                     f"{_escape(row.repeat_text())}</i></div>")
             for command in row.command_list:
-                colour = _COLOUR_BY_KIND.get(command.kind, "#909090")
+                colour = COLOUR_BY_KIND.get(command.kind, "#909090")
                 description = _escape(command.description) or "&mdash;"
                 command_html.append(
                     f"<div><span style='color:{colour}'>&#9679;</span> "

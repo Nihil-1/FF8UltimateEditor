@@ -1700,8 +1700,8 @@
     "size": 1,
     "label": "Attack crit bonus",
     "group": "Data",
-    "help": "Bonus to the critical-hit rate. Damage_RollCrit: crit if rand(0-255) <= this + attacker LUCK; a crit doubles physical damage. Click f(x) for detail.",
-    "formula": "weapon_crit"
+    "help": "Bonus to the critical-hit rate. Damage_RollCrit: crit if rand(0-255) <= this + attacker LUCK - but a MONSTER has no LUCK stat (always 0), so here the chance is exactly this/256 and this byte is the only source of crits for the monster. 255 = always crits. A crit doubles physical damage. Only crit-rolling Attack Types read it (Physical, % physical, Physical ignore VIT). Click f(x) for detail.",
+    "formula": "monster_crit"
    },
    {
     "name": "status_attack_enabler",

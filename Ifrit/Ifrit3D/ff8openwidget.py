@@ -314,7 +314,11 @@ class FF8OpenGLWidget(QOpenGLWidget):
             if not lst:
                 return 0
             n = len(lst)
-            drop = np.zeros(n, dtype=bool) if cull is None else cull.copy()
+            # The cull mask is a per-paint cache and can be one geometry behind here: a weapon
+            # swap replaces the face list (and asks for this count) before the next paint
+            # recomputes the mask, so a mask whose length no longer matches the list is stale and
+            # ignored - the next paint rebuilds it against the new geometry.
+            drop = cull.copy() if cull is not None and len(cull) == n else np.zeros(n, dtype=bool)
             if hidden is not None and len(hidden) == n:
                 drop |= hidden
             return int((~drop).sum())
@@ -447,6 +451,64 @@ class FF8OpenGLWidget(QOpenGLWidget):
         self.reference_position = [x, y, z]
         self.update()
 
+    def set_preview_markers(self, ground_y=None, target=None):
+        """Spatial reference for the sequence preview: a ground grid at `ground_y` and a
+        marker at `target` (both in model space, None hides each). A model translated by
+        a sequence only READS as moving when something in the scene stays put - the grid
+        is that something, and the marker shows where the assumed target stands."""
+        self._preview_markers = (ground_y, target)
+        self.update()
+
+    def set_effect_flash(self, position, life):
+        """A symbolic burst where an effect command just fired (the real particle code is
+        procedural in the exe, so the preview shows THAT an effect happened, and where).
+        `position` in the same fixed space as the preview markers; `life` 1.0 (just
+        fired) -> 0.0 (gone, or pass position=None to clear)."""
+        self._effect_flash = (position, life) if position is not None else None
+        self.update()
+
+    def _draw_effect_flash(self):
+        flash = getattr(self, '_effect_flash', None)
+        if flash is None:
+            return
+        (fx, fy, fz), life = flash
+        radius = 1.2 + (1.0 - life) * 2.5          # expands as it fades
+        glColor3f(0.9, 0.55 + 0.3 * life, 0.25)
+        glBegin(GL_LINES)
+        for dx, dy, dz in ((1, 0, 0), (0, 1, 0), (0, 0, 1),
+                           (0.7, 0.7, 0), (0.7, 0, 0.7), (0, 0.7, 0.7)):
+            glVertex3f(fx - dx * radius, fy - dy * radius, fz - dz * radius)
+            glVertex3f(fx + dx * radius, fy + dy * radius, fz + dz * radius)
+        glEnd()
+
+    def _draw_preview_markers(self):
+        ground_y, target = getattr(self, '_preview_markers', (None, None))
+        glDisable(GL_TEXTURE_2D)
+        if ground_y is not None:
+            # A quiet grid: large enough to still be there after a long 9E move.
+            half_size, step = 40.0, 4.0
+            glColor3f(0.32, 0.32, 0.38)
+            glBegin(GL_LINES)
+            line = -half_size
+            while line <= half_size:
+                glVertex3f(line, ground_y, -half_size)
+                glVertex3f(line, ground_y, half_size)
+                glVertex3f(-half_size, ground_y, line)
+                glVertex3f(half_size, ground_y, line)
+                line += step
+            glEnd()
+        if target is not None:
+            tx, ty, tz = target
+            glColor3f(0.85, 0.35, 0.3)
+            glBegin(GL_LINES)
+            glVertex3f(tx, ty, tz)          # a post from the ground...
+            glVertex3f(tx, ty + 6.0, tz)
+            glVertex3f(tx - 1.5, ty, tz)    # ...on a small ground cross
+            glVertex3f(tx + 1.5, ty, tz)
+            glVertex3f(tx, ty, tz - 1.5)
+            glVertex3f(tx, ty, tz + 1.5)
+            glEnd()
+
     def set_camera(self, eye, target, up=(0.0, 1.0, 0.0)):
         """Place an explicit eye->target camera (used by the camera-animation preview),
         replacing the orbit camera. Coordinates are in viewer space - the same space
@@ -519,6 +581,16 @@ class FF8OpenGLWidget(QOpenGLWidget):
 
         if self.show_axis:
             self.draw_axis()
+        if (getattr(self, '_preview_markers', (None, None)) != (None, None)
+                or getattr(self, '_effect_flash', None) is not None):
+            # The markers are the scene's FIXED reference, so they must not ride along
+            # with the model translation applied just above: undo it around them.
+            glPushMatrix()
+            glTranslatef(-self.model_translation[0], -self.model_translation[1],
+                         -self.model_translation[2])
+            self._draw_preview_markers()
+            self._draw_effect_flash()
+            glPopMatrix()
         if self.show_texture and self._gl_textures and (self.triangles_uv or self.quads_uv):
             self._draw_textured_triangles()
             self._draw_textured_quads()
